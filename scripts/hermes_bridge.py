@@ -2911,6 +2911,19 @@ def _workflow_artifact_instruction(contract: dict[str, str]) -> str:
     return "输出可直接渲染的 Markdown 正文。"
 
 
+def _normalize_presentation_reply(reply: str) -> str:
+    value = _extract_json_object(reply)
+    slides = value.get("slides") if isinstance(value, dict) else None
+    if isinstance(slides, list):
+        for slide in slides:
+            if not isinstance(slide, dict):
+                continue
+            layout = str(slide.get("layout") or "bullets")
+            if layout in {"bullets", "conclusion"} and "bullets" not in slide and "key_points" in slide:
+                slide["bullets"] = slide.pop("key_points")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def _approved_presentation_stage(
     run: dict[str, Any], output_format: str, label: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -3241,7 +3254,10 @@ def _workflow_run_sync(execution_id: str) -> None:
             approved_design = None
             approved_outline = None
             if contract["render_type"] == "presentation":
+                reply = _normalize_presentation_reply(reply)
                 reply, approved_design, approved_outline = _bind_approved_presentation_inputs(run, reply)
+            elif contract["render_type"] == "presentation_design":
+                reply = _normalize_presentation_reply(reply)
             elif contract["render_type"].startswith("presentation"):
                 reply = json.dumps(_extract_json_object(reply), ensure_ascii=False, separators=(",", ":"))
             with _workflow_runs_lock:

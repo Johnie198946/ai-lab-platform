@@ -610,6 +610,19 @@ def test_presentation_prompt_rejects_oversized_private_source_instead_of_excerpt
         bridge._workflow_node_prompt(run, node)
 
 
+def test_bridge_normalizes_outline_style_points_for_renderable_slides():
+    import scripts.hermes_bridge as bridge
+
+    normalized = json.loads(bridge._normalize_presentation_reply(json.dumps({
+        "title": "design",
+        "theme": THEME_A,
+        "slides": [{"layout": "bullets", "title": "goals", "key_points": ["one"]}],
+    })))
+    assert normalized["slides"][0]["bullets"] == ["one"]
+    assert "key_points" not in normalized["slides"][0]
+    build_pptx(json.dumps(normalized))
+
+
 def test_bridge_final_projection_uses_exact_approved_design_theme_and_binding():
     import scripts.hermes_bridge as bridge
 
