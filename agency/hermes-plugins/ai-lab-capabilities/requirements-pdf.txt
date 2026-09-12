@@ -1,0 +1,3 @@
+# Offline PDF parsing; install into this plugin's _pdf_dependencies directory
+# when pypdf is not already installed in the active Hermes Python runtime.
+pypdf==6.14.2
