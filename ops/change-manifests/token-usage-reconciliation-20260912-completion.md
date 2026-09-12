@@ -53,6 +53,8 @@ An isolated local PostgreSQL container exercised the actual historical-applicati
 
 ## iOS source follow-up and limits
 
-Live readback demonstrated that `missing_usage_calls` and `unverified_calls` differ. The final UI computes verified calls only from explicit coverage, shows unknown when coverage is absent, and uses ledger-occupancy VoiceOver wording. The current iOS source passed **136 simulator tests, zero failures**. This source-only follow-up does not change the verified backend release above; no new distributed-package verification is claimed.
+Live readback demonstrated that `missing_usage_calls` and `unverified_calls` differ. The final UI computes verified calls only from explicit coverage, shows unknown when coverage is absent, and uses ledger-occupancy VoiceOver wording. iOS source `6d4e5ba930e62b5b6a6e7ae26938194d15d9e6e0` passed **137 simulator tests, zero failures**, with [CI success](https://github.com/Johnie198946/ai-lab-platform/actions/runs/34709606616). This source-only follow-up does not change the verified backend release above; no new distributed-package verification is claimed.
+
+The retained PostgreSQL backup was also restored successfully into a disposable, network-isolated database on the same server: 88 tables restored, production database untouched, temporary container and volume removed. Its verification receipt was reread from the restricted rollback directory.
 
 Older anonymous history is still unverified and is not added to canonical totals or blindly charged. The quota ledger can retain unverified historical occupancy and unresolved reservations: it is not an assertion of complete provider consumption. Full historical reconciliation and independent iOS installation/distribution verification remain explicit limitations.
