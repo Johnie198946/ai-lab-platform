@@ -27,16 +27,22 @@
 
 ## Delivery
 
-- local_commit: pending
-- remote_sha: pending
-- local_plugin_before: pending
-- local_plugin_after: pending
-- server_before: not applicable — local-single-tenant Hermes plugin
-- server_after: not applicable — cloud mode intentionally excluded
-- health_check: pending
-- functional_check: pending
-- rollback_point: pending
+- code_commit: `f3e456212b8c2d9c4d56bbf2c72145735da79413`
+- code_remote_sha_verified: `f3e456212b8c2d9c4d56bbf2c72145735da79413`
+- local_plugin_before:
+  - `capability_router.py`: `8d72aa2aa3ae6228f52391433ecd749910f8188805f65acc5cda5e97f8d54edb`
+  - `research_deposit.py`: `6574ea282c72effa43ed1883c2ece9cf6de705ee5e29683b8b6c0f84060b893b`
+- local_plugin_after:
+  - `capability_router.py`: `c643ce96abd125743aa9f3e7038fccef2efc7359e4d9e9e47a4806d6ef2fca9f`
+  - `research_deposit.py`: `4117cc3056612e97c43120bc4eda4f9dc8fc0cace3158949d01bb9b67563986c`
+- source/deployed hashes: matched for both files.
+- server_before: not applicable — local-single-tenant Hermes plugin.
+- server_after: not applicable — cloud mode intentionally excluded.
+- health_check: launchd gateway supervised; in-process restart is safety-blocked and requires one external-shell restart.
+- functional_check: synthetic native hook/regression tests passed; live new-turn check pending gateway reload.
+- rollback_point: `/Users/dengzhaoyu/.hermes/backups/research-route-default-deep/f3e456212b8c2d9c4d56bbf2c72145735da79413`
 
 ## Remaining risk
 
-- Existing sessions retain their already-created task-scoped veto/preview state; the fix applies to new research tasks after plugin reload.
+- Existing sessions retain their already-created task-scoped veto/preview state.
+- The deployed files take effect for new research tasks only after the gateway is restarted from an external shell.
