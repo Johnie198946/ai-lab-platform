@@ -106,8 +106,12 @@ def test_clarification_runner_declares_zero_tool_and_zero_context_boundary():
     source = inspect.getsource(hermes_bridge._run_clarification_in_process)
     assert 'enabled_toolsets=no_toolsets' in source
     assert 'get_tool_definitions(enabled_toolsets=no_toolsets' in source
-    assert 'skip_context_files=True' in source
-    assert 'skip_memory=True' in source
+    assert '**_isolated_agent_context_kwargs()' in source
+    assert hermes_bridge._isolated_agent_context_kwargs() == {
+        "skip_context_files": True,
+        "skip_memory": True,
+        "load_soul_identity": False,
+    }
     assert 'max_iterations=1' in source
 
 

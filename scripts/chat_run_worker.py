@@ -5,6 +5,7 @@ invokes Hermes outside the Bridge API process, so API/SSE restarts do not kill w
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -19,6 +20,11 @@ from typing import Any
 from backend.services.knowledge_policy import KnowledgePolicy, mint_capability
 from backend.services.user_note_context import persist_generated_private_note
 from backend.services.knowledge_worker_authorization import stage_is_authorized
+from backend.services.runtime_placement import (
+    RuntimePlacementConflict,
+    claim_runtime_placement,
+    resolve_runtime_placement,
+)
 from scripts.chat_run_store import DurableChatRunStore
 from scripts import hermes_bridge as bridge
 
@@ -41,6 +47,8 @@ CLAIM_AFTER = float(_claim_after) if _claim_after else None
 if CLAIM_AFTER is not None and (not math.isfinite(CLAIM_AFTER) or CLAIM_AFTER < 0):
     raise ValueError("HERMES_CHAT_WORKER_CLAIM_AFTER must be a non-negative epoch")
 _run_context = threading.local()
+_placement_loop = asyncio.new_event_loop()
+_placement_loop_lock = threading.Lock()
 _AUTO_INGEST_RE = re.compile(r"调研|研究|分析|评估|方案|报告|诊断|规划|research|analysis|report|plan", re.I)
 
 
@@ -192,6 +200,35 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
         _run_context.run_id = ""
         return
     run_type = str(payload.get("run_type") or "chat")
+    placement = dict(payload["agent_config"].get("runtime_placement") or {})
+    try:
+        with _placement_loop_lock:
+            if not placement:
+                placement = _placement_loop.run_until_complete(
+                    resolve_runtime_placement(
+                        {
+                            "tenant_key": str(run.get("tenant_id") or ""),
+                            "sub": str(run.get("user_id") or ""),
+                        },
+                        preferred_shard=os.environ.get(
+                            "QUANTUM_RUNTIME_SHARD_ID", "shard-1"
+                        ),
+                    )
+                ).bridge_config()
+            claimed = _placement_loop.run_until_complete(claim_runtime_placement({
+                "tenant_key": str(run.get("tenant_id") or ""),
+                "sub": str(run.get("user_id") or ""),
+            }))
+        if claimed.bridge_config() != placement:
+            raise RuntimePlacementConflict("runtime_placement_payload_mismatch")
+    except (RuntimePlacementConflict, RuntimeError):
+        store.append_event(run_id, {
+            "type": "error",
+            "code": "runtime_placement_denied",
+            "message": "Runtime placement or writer lease is unavailable",
+        })
+        _run_context.run_id = ""
+        return
     stage_spec = None
     if "knowledge_stage" in payload or run_type.startswith("knowledge_"):
         from backend.services.knowledge_run_adapter import validate_execution, KnowledgeRunAdapter

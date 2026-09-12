@@ -1,8 +1,9 @@
-"""Filesystem boundary for tenant-scoped Hermes runtime state.
+"""Filesystem boundary for user-scoped Hermes runtime state.
 
 The Hermes installation is treated as a read-only template.  Agent snapshots,
-Skill copies and writable SessionDB files live below hashed tenant/user
-namespaces; raw identity values are never used as path segments.
+personal Skills and writable SessionDB files live in one hashed user profile.
+Unreviewed legacy tenant Skills remain quarantined in place. Raw identity values
+are never used as path segments.
 """
 
 from __future__ import annotations
@@ -14,9 +15,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import tempfile
 import threading
 from typing import Any
+import uuid
+import zipfile
 
 import yaml
 
@@ -116,31 +120,6 @@ def _copy_template_version(source: Path, destination: Path) -> None:
         shutil.copy2(source_file, target, follow_symlinks=False)
 
 
-def _copy_legacy_custom_skills(source_root: Path, tenant_key: str, target: Path) -> None:
-    # Compatibility import only. Raw tenant values are accepted solely when
-    # they are one safe legacy directory segment; they never become new paths.
-    if not _SAFE_SKILL_NAME.fullmatch(tenant_key):
-        return
-    legacy = source_root / "tenants" / tenant_key
-    if not legacy.is_dir() or legacy.is_symlink():
-        return
-    for skill_md in sorted(legacy.glob("*/SKILL.md")):
-        name = skill_md.parent.name
-        if not _SAFE_SKILL_NAME.fullmatch(name):
-            continue
-        destination = target / name
-        if destination.exists():
-            continue
-        destination.mkdir(parents=True, exist_ok=False)
-        for source_file in sorted(skill_md.parent.rglob("*")):
-            if not source_file.is_file() or source_file.is_symlink():
-                continue
-            relative = source_file.relative_to(skill_md.parent)
-            copied = destination / relative
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_file, copied, follow_symlinks=False)
-
-
 def ensure_tenant_sandbox(
     *,
     tenant_key: str,
@@ -152,19 +131,24 @@ def ensure_tenant_sandbox(
         raise ValueError("tenant_key and user_id are required")
     tenant_ns = namespace(tenant_key)
     user_ns = namespace(user_id)
-    base = (root or sandbox_root()) / "tenants" / tenant_ns
-    hermes_home = base / "hermes-home"
+    tenant_root = (root or sandbox_root()) / "tenants" / tenant_ns
+    profile_root = tenant_root / "users" / user_ns
+    hermes_home = profile_root / "hermes-home"
     skills_root = hermes_home / "skills"
-    templates_root = skills_root / "templates"
+    templates_root = tenant_root / "skills" / "templates"
+    legacy_tenant_skills = tenant_root / "hermes-home" / "skills" / "custom"
     custom_root = skills_root / "custom"
     agents_root = hermes_home / "agents"
-    state_db = base / "users" / user_ns / "state.db"
+    state_db = hermes_home / "state.db"
+    legacy_state_db = profile_root / "state.db"
     source = template_root or template_skills_root()
     version = _template_version(source)
     active_template = templates_root / (version or "empty")
-    manifest_path = base / "sandbox.json"
+    manifest_path = hermes_home / "profile.json"
 
-    with _path_lock(base):
+    # Provisioning is rare. One tenant lock keeps its shared immutable template
+    # release atomic while user profiles remain independent at runtime.
+    with _path_lock(tenant_root):
         previous_manifest: dict[str, Any] = {}
         if manifest_path.is_file() and not manifest_path.is_symlink():
             try:
@@ -173,13 +157,16 @@ def ensure_tenant_sandbox(
                 previous_manifest = {}
         for directory in (
             active_template.parent,
+            hermes_home,
             custom_root,
             agents_root,
             state_db.parent,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         try:
-            base.chmod(0o700)
+            tenant_root.chmod(0o700)
+            profile_root.chmod(0o700)
+            hermes_home.chmod(0o700)
             state_db.parent.chmod(0o700)
         except OSError:
             pass
@@ -193,13 +180,21 @@ def ensure_tenant_sandbox(
                 os.replace(payload, active_template)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
-        if not previous_manifest.get("legacy_custom_import_completed"):
-            _copy_legacy_custom_skills(source, tenant_key, custom_root)
+        migrated_state_db = bool(previous_manifest.get("legacy_state_db_migrated"))
+        if (
+            not state_db.exists()
+            and legacy_state_db.is_file()
+            and not legacy_state_db.is_symlink()
+        ):
+            os.replace(legacy_state_db, state_db)
+            migrated_state_db = True
         manifest = {
-            "version": 2,
+            "version": 3,
             "tenant_namespace": tenant_ns,
+            "user_namespace": user_ns,
             "active_template_version": version or "empty",
-            "legacy_custom_import_completed": True,
+            "legacy_state_db_migrated": migrated_state_db,
+            "legacy_tenant_skills_quarantined": legacy_tenant_skills.is_dir(),
         }
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(
@@ -210,7 +205,7 @@ def ensure_tenant_sandbox(
     return TenantHermesSandbox(
         tenant_namespace=tenant_ns,
         user_namespace=user_ns,
-        root=base,
+        root=profile_root,
         hermes_home=hermes_home,
         skills_root=skills_root,
         template_skills=active_template,
@@ -250,7 +245,7 @@ def write_sandbox_skill(
     *,
     replace: bool = False,
 ) -> Path:
-    """Atomically create/update one tenant-owned SKILL.md after routing gates."""
+    """Atomically create/update one profile-owned SKILL.md after routing gates."""
     if not _SAFE_SKILL_NAME.fullmatch(name):
         raise ValueError("invalid_skill_name")
     encoded = content.encode("utf-8")
@@ -410,3 +405,95 @@ def persist_agent_snapshot(
         )
         os.replace(temporary, destination)
     return destination
+
+
+def backup_sandbox_capsule(
+    sandbox: TenantHermesSandbox, archive: Path, *, generation: int,
+) -> dict[str, Any]:
+    """Create an atomic, hashed snapshot after checkpointing the user SessionDB."""
+    if generation < 1 or archive.exists() or archive.is_symlink():
+        raise ValueError("invalid_capsule_backup_target")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with _path_lock(sandbox.root):
+        if sandbox.state_db.is_file() and not sandbox.state_db.is_symlink():
+            with sqlite3.connect(sandbox.state_db) as connection:
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        files: list[tuple[str, Path, str, int]] = []
+        for path in sorted(sandbox.root.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("capsule_symlink_forbidden")
+            if not path.is_file() or path.name in {"state.db-wal", "state.db-shm"}:
+                continue
+            relative = path.relative_to(sandbox.root).as_posix()
+            raw = path.read_bytes()
+            files.append((relative, path, hashlib.sha256(raw).hexdigest(), len(raw)))
+        manifest = {
+            "version": 1,
+            "tenant_namespace": sandbox.tenant_namespace,
+            "user_namespace": sandbox.user_namespace,
+            "generation": generation,
+            "files": [
+                {"path": relative, "sha256": digest, "size": size}
+                for relative, _, digest, size in files
+            ],
+        }
+        temporary = archive.with_name(f".{archive.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                output.writestr(
+                    "_capsule_manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                )
+                for relative, path, _, _ in files:
+                    output.write(path, relative)
+            os.replace(temporary, archive)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return manifest
+
+
+def restore_sandbox_capsule(
+    archive: Path,
+    destination: Path,
+    *,
+    tenant_namespace: str,
+    user_namespace: str,
+    expected_generation: int,
+) -> dict[str, Any]:
+    """Verify every entry before atomically publishing a restored capsule."""
+    if not archive.is_file() or archive.is_symlink() or destination.exists():
+        raise ValueError("invalid_capsule_restore_target")
+    staging = Path(tempfile.mkdtemp(prefix=".capsule-restore-", dir=destination.parent))
+    try:
+        with zipfile.ZipFile(archive) as source:
+            manifest = json.loads(source.read("_capsule_manifest.json"))
+            if (
+                manifest.get("version") != 1
+                or manifest.get("tenant_namespace") != tenant_namespace
+                or manifest.get("user_namespace") != user_namespace
+                or manifest.get("generation") != expected_generation
+            ):
+                raise ValueError("capsule_identity_or_generation_mismatch")
+            entries = manifest.get("files")
+            if not isinstance(entries, list) or len(entries) > 10_000:
+                raise ValueError("invalid_capsule_manifest")
+            total = 0
+            for entry in entries:
+                relative = Path(str(entry.get("path") or ""))
+                if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                    raise ValueError("invalid_capsule_path")
+                info = source.getinfo(relative.as_posix())
+                total += info.file_size
+                if total > 2 * 1024 * 1024 * 1024 or info.file_size != int(entry["size"]):
+                    raise ValueError("invalid_capsule_size")
+                raw = source.read(info)
+                if hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
+                    raise ValueError("capsule_hash_mismatch")
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+        staging.chmod(0o700)
+        os.replace(staging, destination)
+        return manifest
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

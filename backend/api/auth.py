@@ -261,6 +261,7 @@ async def require_auth(
     # the legacy visibility ContextVar consumed by the file-backed knowledge API.
     visible: Optional[FrozenSet[str]]
     policy_version = ""
+    plan_id = ""
     try:
         from backend.api.catalog import compute_catalog
         from backend.db import SessionLocal
@@ -278,6 +279,7 @@ async def require_auth(
             )
         visible = policy.effective_categories
         policy_version = policy.policy_version
+        plan_id = policy.plan_id
     except Exception:
         # Fail-safe: never fall back to all-visible in authenticated production.
         # Only green public categories remain available when the DB/Authen
@@ -303,4 +305,5 @@ async def require_auth(
     payload["is_super_admin"] = is_super
     payload["visible_categories"] = visible
     payload["knowledge_policy_version"] = policy_version
+    payload["plan_id"] = plan_id
     return payload

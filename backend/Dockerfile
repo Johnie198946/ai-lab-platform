@@ -35,6 +35,9 @@ COPY scripts /app/scripts
 RUN mkdir -p /app/data/manifests /app/data/runtime /home/ailab/.hermes/skills /home/ailab/.hermes/profiles \
     && chown -R ailab:ailab /app/data /home/ailab
 
+ARG AI_LAB_SOURCE_SHA
+LABEL org.opencontainers.image.revision=$AI_LAB_SOURCE_SHA
+
 EXPOSE 8000
 
 USER ailab

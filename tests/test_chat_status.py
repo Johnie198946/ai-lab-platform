@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 # 必须在 import bridge 前设置环境变量（避免默认落到真实 ~/.hermes/state.db）
@@ -914,7 +915,11 @@ class TestChatStatusPassthrough(unittest.TestCase):
         from backend.api.chat import chat_status
 
         fake = {"status": "running", "latest_step": "工具执行完成: read_file"}
-        with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
+        with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock, \
+             patch("backend.api.chat.resolve_runtime_placement") as resolve:
+            resolve.return_value = SimpleNamespace(
+                bridge_config=lambda: {"shard_id": "shard-1"}
+            )
             result = asyncio.run(chat_status("sid", consume=False, payload={}))
         self.assertEqual(result["status"], "running")
         session = mock.call_args.args[0]
@@ -923,13 +928,18 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "consume": False, "offset": 0,
             "tenant_id": "public", "user_id": session,
             "answer_blocks_v1": False,
+            "placement": {"shard_id": "shard-1"},
         })
 
     def test_chat_status_route_consume_forward(self):
         from backend.api.chat import chat_status
 
         fake = {"status": "completed", "answer": "x"}
-        with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
+        with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock, \
+             patch("backend.api.chat.resolve_runtime_placement") as resolve:
+            resolve.return_value = SimpleNamespace(
+                bridge_config=lambda: {"shard_id": "shard-1"}
+            )
             asyncio.run(chat_status("sid", consume=True, payload={}))
         session = mock.call_args.args[0]
         self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
@@ -937,6 +947,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "consume": True, "offset": 0,
             "tenant_id": "public", "user_id": session,
             "answer_blocks_v1": False,
+            "placement": {"shard_id": "shard-1"},
         })
 
     def test_chat_status_route_offset_forward(self):
@@ -944,7 +955,11 @@ class TestChatStatusPassthrough(unittest.TestCase):
         from backend.api.chat import chat_status
 
         fake = {"status": "running", "phase": "tool", "latest_step": "正在执行: read_file"}
-        with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
+        with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock, \
+             patch("backend.api.chat.resolve_runtime_placement") as resolve:
+            resolve.return_value = SimpleNamespace(
+                bridge_config=lambda: {"shard_id": "shard-1"}
+            )
             result = asyncio.run(chat_status("sid", consume=False, offset=42, payload={}))
         self.assertEqual(result["phase"], "tool")
         session = mock.call_args.args[0]
@@ -953,6 +968,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "consume": False, "offset": 42,
             "tenant_id": "public", "user_id": session,
             "answer_blocks_v1": False,
+            "placement": {"shard_id": "shard-1"},
         })
 
 

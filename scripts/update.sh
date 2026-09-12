@@ -1040,7 +1040,7 @@ for root in (data, data / "vault/raw/dialogues/tenants"):
 }
 
 verify_offline_images() {
-  local config service image operating_system architecture user healthcheck actual expected count
+  local config service image operating_system architecture user healthcheck revision actual expected count
   local services=(postgres redis api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
   local attestations="${AI_LAB_OFFLINE_IMAGE_ATTESTATIONS:-$SHARED_ROOT/offline-images.attested}"
   if [ -L "$attestations" ] || [ ! -f "$attestations" ]; then
@@ -1108,6 +1108,15 @@ PY
       echo "ERROR: offline image hash mismatch: $service=$image" >&2
       return 1
     fi
+    case "$service" in
+      api|workflow-worker|planning-worker|agent-evaluation-worker)
+        revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" || return 1
+        if [ "$revision" != "$EXPECTED_SHA" ]; then
+          echo "ERROR: backend image revision mismatch: $service=${revision:-<missing>} expected=$EXPECTED_SHA" >&2
+          return 1
+        fi
+        ;;
+    esac
     if [ "$operating_system" != "linux" ] || [ "$architecture" != "amd64" ]; then
       echo "ERROR: offline image must use linux/amd64: $service=$image" >&2
       return 1
@@ -1574,7 +1583,7 @@ RELEASE_VALIDATED=1
 
 echo "==> [1/6] 下载并解包 SHA $EXPECTED_SHA"
 curl -fsSL --retry 3 \
-  "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
+  "https://codeload.github.com/Johnie198946/Quantum/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
   -o "$TARBALL"
 tar xzf "$TARBALL" --strip-components=1 -C "$STAGING_DIR"
 chmod 0755 "$RELEASE_DIR"

@@ -12,9 +12,32 @@ import yaml
 
 
 UPDATE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "update.sh"
+CI_WORKFLOW = UPDATE_SCRIPT.parents[1] / ".github" / "workflows" / "ci.yml"
 SYSTEMD_DIR = UPDATE_SCRIPT.parents[1] / "ops" / "systemd"
 BRIDGE_SCRIPT = UPDATE_SCRIPT.parents[1] / "scripts" / "hermes_bridge.py"
 EGRESS_TUNNEL_SCRIPT = UPDATE_SCRIPT.parents[1] / "ops" / "scripts" / "clash-verge-egress-tunnel.sh"
+
+
+def test_server_deploy_downloads_quantum_release_archive() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert "https://codeload.github.com/Johnie198946/Quantum/tar.gz/$EXPECTED_SHA" in script
+    assert "codeload.github.com/Johnie198946/ai-lab-platform" not in script
+
+
+def test_backend_images_are_bound_to_the_exact_release_sha() -> None:
+    dockerfile = (UPDATE_SCRIPT.parents[1] / "backend" / "Dockerfile").read_text()
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert "ARG AI_LAB_SOURCE_SHA" in dockerfile
+    assert "LABEL org.opencontainers.image.revision=$AI_LAB_SOURCE_SHA" in dockerfile
+    assert "backend image revision mismatch" in script
+    assert 'revision" != "$EXPECTED_SHA"' in script
+
+
+def test_ci_and_production_pin_the_same_hermes_source() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    commit = "c8aa5608c24e3636e77c267650c0f1f52e44adb0"
+    assert workflow.count(commit) == 2
+    assert "63279301bcbdc185c1b07b98a9312eb0c862f26d" not in workflow
 
 HERMES_ACCOUNT_HOME = "/var/lib/quantumn-hermes"
 HERMES_HOME = f"{HERMES_ACCOUNT_HOME}/.hermes"
@@ -116,7 +139,7 @@ def test_hermes_units_share_hardened_unprivileged_runtime_contract() -> None:
             f"Environment=HERMES_HOME={HERMES_HOME}",
             f"Environment=HERMES_AGENT_ROOT={HERMES_AGENT_ROOT}",
             f"Environment=HERMES_BIN={HERMES_LAUNCHER}",
-            "Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-sol",
+            "Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-luna",
             "Environment=AI_LAB_AGENT_OS_MODE=cloud_multi_tenant",
             "Environment=HERMES_CHAT_RUN_DB=/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3",
             "NoNewPrivileges=true",
@@ -161,6 +184,7 @@ stat() {{ printf '0:0:600:%d\n' "$(wc -c < "${{@: -1}}")"; }}
 docker() {{
   [ "$1" = compose ] && [ "$4" = exec ] && [ "$6" = api ] || return 1
   shift 6
+  [ "$1" = python ] && shift && set -- python3 "$@"
   DATABASE_URL="$SOURCE_DATABASE_URL" "$@"
 }}
 COMPOSE_PROJECT=contract-test
@@ -378,6 +402,17 @@ def test_runtime_scripts_use_the_official_dedicated_user_install() -> None:
         assert f"export {proxy_variable}=" not in update
         assert f"Environment={proxy_variable}=" not in update
         assert f"{proxy_variable}=" not in bridge_config
+
+    for unit in ("hermes-bridge.service", "hermes-chat-worker.service"):
+        content = (SYSTEMD_DIR / unit).read_text(encoding="utf-8")
+        assert "HERMES_FAST_CHAT_MODEL=gpt-5.6-luna" in content
+        assert "HERMES_BALANCED_CHAT_MODEL=gpt-5.6-sol" in content
+        assert "HERMES_REASONING_CHAT_MODEL=gpt-5.6-sol" in content
+        assert "HERMES_MAX_CONCURRENCY=2" in content
+        assert "HERMES_MAX_QUEUE=8" in content
+        assert "HERMES_QUEUE_TIMEOUT_SECONDS=30" in content
+        assert "QUANTUM_RUNTIME_SHARD_ID=shard-1" in content
+        assert "QUANTUM_RUNTIME_SHARDS=shard-1" in content
 
 
 @pytest.mark.parametrize(
@@ -1772,10 +1807,11 @@ docker() {{
   image="${{@: -1}}"
   service="${{image#registry.local/}}"; service="${{service%:release}}"
   [ "$CHECK" = missing ] && [ "$service" = redis ] && return 1
-  operating_system=linux; architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'
+  operating_system=linux; architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'; revision="$EXPECTED_SHA"
   [ "$CHECK" = os ] && [ "$service" = postgres ] && operating_system=windows
   [ "$CHECK" = architecture ] && [ "$service" = redis ] && architecture=arm64
   [ "$CHECK" = hash ] && [ "$service" = postgres ] && actual='sha256:{'b' * 64}'
+  [ "$CHECK" = revision ] && [ "$service" = api ] && revision='wrong-sha'
   case "$CHECK" in root|0|00|00:1000) [ "$service" = postgres ] && user="$CHECK" ;; esac
   [ "$CHECK" = health ] && [ "$service" = redis ] && health=null
   [ "$CHECK" = disabled-health ] && [ "$service" = redis ] && health='{{"Test":["NONE"]}}'
@@ -1787,6 +1823,7 @@ docker() {{
     '{{{{.Architecture}}}}') printf '%s\n' "$architecture" ;;
     '{{{{.Config.User}}}}') printf '%s\n' "$user" ;;
     '{{{{json .Config.Healthcheck}}}}') printf '%s\n' "$health" ;;
+    '{{{{index .Config.Labels "org.opencontainers.image.revision"}}}}') printf '%s\n' "$revision" ;;
     *'\\t'*) printf '%s\\\\t%s\\\\t%s\\\\t%s\n' "$actual" "$architecture" "$user" "$health" ;;
     *) return 98 ;;
   esac
@@ -1794,10 +1831,12 @@ docker() {{
 SHARED_ROOT='{tmp_path}'
 COMPOSE_PROJECT=contract-test
 AI_LAB_OFFLINE_IMAGE_ATTESTATIONS='{attestations}'
+EXPECTED_SHA='{'c' * 40}'
 verify_offline_images
 '''
     cases = (
         ("valid", 0), ("missing", 1), ("os", 1), ("architecture", 1), ("hash", 1),
+        ("revision", 1),
         ("root", 1), ("0", 1), ("00", 1), ("00:1000", 1), ("health", 1),
         ("disabled-health", 1), ("empty-health", 1), ("missing-health-command", 1),
         ("missing-record", 1), ("duplicate", 1),

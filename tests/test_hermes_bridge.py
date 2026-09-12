@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import ast
 import os
 import sqlite3
 import subprocess
@@ -24,6 +25,90 @@ os.environ.setdefault("HERMES_BRIDGE_INTERNAL_TOKEN", "test-internal-token")
 
 
 class TestBridgeCLIParms(unittest.TestCase):
+    def test_runtime_admission_rejects_an_overflowing_queue(self):
+        from scripts import hermes_bridge as bridge
+
+        async def run() -> None:
+            original = (
+                bridge._semaphore,
+                bridge.MAX_QUEUED_REQUESTS,
+                bridge._queued_requests,
+            )
+            bridge._semaphore = asyncio.Semaphore(1)
+            bridge.MAX_QUEUED_REQUESTS = 0
+            bridge._queued_requests = 0
+            await bridge._semaphore.acquire()
+            try:
+                with self.assertRaises(Exception) as raised:
+                    async with bridge._admit_request():
+                        pass
+                self.assertEqual(raised.exception.detail, "runtime_capacity_exceeded")
+            finally:
+                bridge._semaphore.release()
+                (
+                    bridge._semaphore,
+                    bridge.MAX_QUEUED_REQUESTS,
+                    bridge._queued_requests,
+                ) = original
+
+        asyncio.run(run())
+
+    def test_clarification_preserves_capacity_retry_response(self):
+        from fastapi import HTTPException
+        from scripts import hermes_bridge as bridge
+
+        @bridge.asynccontextmanager
+        async def denied():
+            raise HTTPException(
+                status_code=503,
+                detail="runtime_capacity_exceeded",
+                headers={"Retry-After": "2"},
+            )
+            yield
+
+        body = bridge.ClarificationBridgeRequest(
+            tenant_id="tenant", workflow_id="workflow", goal="clear goal",
+        )
+        with patch.object(bridge, "_admit_request", denied):
+            with self.assertRaises(Exception) as raised:
+                asyncio.run(bridge.clarify_workflow(body, "test-internal-token"))
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.headers, {"Retry-After": "2"})
+
+    def test_inference_policy_fails_closed_and_caps_budget(self):
+        from scripts import hermes_bridge as bridge
+
+        assert bridge._request_inference_policy({}) is None
+        policy = bridge._request_inference_policy({"inference_policy": {
+            "tier": "fast", "policy_version": "inference-v1",
+            "max_output_tokens": 1200, "allow_subagents": True,
+        }})
+        assert policy == {
+            "tier": "fast", "policy_version": "inference-v1",
+            "max_output_tokens": 1200, "allow_subagents": False,
+        }
+        with self.assertRaisesRegex(RuntimeError, "invalid_inference_budget"):
+            bridge._request_inference_policy({"inference_policy": {
+                "tier": "fast", "policy_version": "inference-v1",
+                "max_output_tokens": 1201,
+            }})
+
+    def test_runtime_placement_rejects_the_wrong_shard_or_generation(self):
+        from scripts import hermes_bridge as bridge
+
+        with patch.dict(os.environ, {"QUANTUM_RUNTIME_SHARD_ID": "shard-1"}):
+            assert bridge._request_runtime_placement({"runtime_placement": {
+                "shard_id": "shard-1", "generation": 3,
+            }}) == {"shard_id": "shard-1", "generation": 3}
+            with self.assertRaisesRegex(RuntimeError, "runtime_shard_mismatch"):
+                bridge._request_runtime_placement({"runtime_placement": {
+                    "shard_id": "shard-2", "generation": 3,
+                }})
+            with self.assertRaisesRegex(RuntimeError, "invalid_runtime_generation"):
+                bridge._request_runtime_placement({"runtime_placement": {
+                    "shard_id": "shard-1", "generation": 0,
+                }})
+
     """验收项 #2: CLI 参数与路径规范。"""
 
     def test_bridge_bind_address_accepts_only_rfc1918_ipv4(self):
@@ -36,6 +121,32 @@ class TestBridgeCLIParms(unittest.TestCase):
                 with patch.dict(os.environ, {"HERMES_BRIDGE_BIND_ADDRESS": invalid}):
                     with self.assertRaises(RuntimeError):
                         bridge._private_bridge_bind_address()
+
+    def test_every_agent_constructor_uses_the_shared_profile_isolation_guard(self):
+        import scripts.hermes_bridge as bridge
+
+        source = Path(bridge.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        constructors = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AIAgent"
+        ]
+        self.assertEqual(len(constructors), 4)
+        for constructor in constructors:
+            self.assertTrue(any(
+                keyword.arg is None
+                and isinstance(keyword.value, ast.Call)
+                and isinstance(keyword.value.func, ast.Name)
+                and keyword.value.func.id == "_isolated_agent_context_kwargs"
+                for keyword in constructor.keywords
+            ))
+        self.assertEqual(bridge._isolated_agent_context_kwargs(), {
+            "skip_context_files": True,
+            "skip_memory": True,
+            "load_soul_identity": False,
+        })
 
     def test_goal_request_accepts_only_the_bounded_trusted_agent_shape(self):
         import scripts.hermes_bridge as bridge

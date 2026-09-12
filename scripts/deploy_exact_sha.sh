@@ -11,6 +11,11 @@ fi
 
 EXPECTED_SHA="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 DEPLOY_HOST="${AI_LAB_DEPLOY_HOST:?ERROR: 必须设置 AI_LAB_DEPLOY_HOST}"
+REMOTE_SUDO="${AI_LAB_DEPLOY_REMOTE_SUDO:-0}"
+if [[ ! "$REMOTE_SUDO" =~ ^[01]$ ]]; then
+  echo "ERROR: AI_LAB_DEPLOY_REMOTE_SUDO must be 0 or 1" >&2
+  exit 2
+fi
 LOCAL_SCRIPT="$(mktemp "${TMPDIR:-/tmp}/ai-lab-update.XXXXXX")"
 REMOTE_SCRIPT=""
 
@@ -38,12 +43,17 @@ fi
 
 scp -q "$LOCAL_SCRIPT" "$DEPLOY_HOST:$REMOTE_SCRIPT"
 ssh -o BatchMode=yes "$DEPLOY_HOST" bash -s -- \
-  "$REMOTE_SCRIPT" "$EXPECTED_SHA" "$LOCAL_HASH" <<'REMOTE'
+  "$REMOTE_SCRIPT" "$EXPECTED_SHA" "$LOCAL_HASH" "$REMOTE_SUDO" <<'REMOTE'
 set -euo pipefail
 REMOTE_SCRIPT="$1"
 EXPECTED_SHA="$2"
 LOCAL_HASH="$3"
+REMOTE_SUDO="$4"
 REMOTE_HASH="$(sha256sum "$REMOTE_SCRIPT" | cut -d' ' -f1)"
 test "$REMOTE_HASH" = "$LOCAL_HASH"
-bash "$REMOTE_SCRIPT" "$EXPECTED_SHA"
+if [ "$REMOTE_SUDO" = "1" ]; then
+  sudo -n bash "$REMOTE_SCRIPT" "$EXPECTED_SHA"
+else
+  bash "$REMOTE_SCRIPT" "$EXPECTED_SHA"
+fi
 REMOTE

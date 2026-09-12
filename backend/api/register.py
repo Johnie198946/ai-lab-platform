@@ -49,30 +49,9 @@ class DevLoginRequest(BaseModel):
 
 
 async def _provision_tenant(user_id: str) -> str:
-    """建/取 TenantMapping，返回 tenant_key。
-    平台租户统一：DEFAULT_TENANT_KEY 非空时新用户归入该租户（与 bridge TENANT_ID 一致，
-    保证对话创建技能与 API 数据同租户可见）；否则按 u-<user_id[:8]> 隔离。"""
-    from backend.db import SessionLocal
-    from backend.models.tenant import TenantMapping
-
-    from sqlalchemy import select
-
-    default_tenant = os.environ.get("DEFAULT_TENANT_KEY", "").strip()
-    tenant_key = default_tenant or ("u-" + user_id[:8])
-    async with SessionLocal() as db:
-        row = (
-            await db.execute(
-                select(TenantMapping).where(TenantMapping.user_id == user_id)
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            db.add(TenantMapping(user_id=user_id, org_id="", tenant_key=tenant_key))
-            await db.commit()
-        elif default_tenant and row.tenant_key != tenant_key:
-            # 平台租户统一：已有映射也归入默认租户（与 bridge TENANT_ID 对齐）
-            row.tenant_key = tenant_key
-            await db.commit()
-    return tenant_key
+    """建/取用户映射；注册与请求鉴权必须走同一碰撞安全主路径。"""
+    info = await auth_api._default_resolve_tenant(user_id)
+    return str(info["tenant_key"])
 
 
 @router.post("/register")

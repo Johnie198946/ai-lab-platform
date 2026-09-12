@@ -63,7 +63,10 @@ class TestChatAgentRouting(unittest.TestCase):
         with patch("backend.api.chat.match_identity_rule", return_value=None), \
              patch("backend.api.chat._call_hermes", side_effect=fake_hermes):
             resp = asyncio.run(
-                chat(ChatRequest(question="帮我审查这段代码", agent_id="supervision"), payload={})
+                chat(
+                    ChatRequest(question="帮我审查这段代码", agent_id="supervision"),
+                    payload={"tenant_key": "test", "sub": "test-user"},
+                )
             )
         self.assertEqual(resp.answer, "答案")
         self.assertEqual(captured["goal"], "帮我审查这段代码")
@@ -72,7 +75,10 @@ class TestChatAgentRouting(unittest.TestCase):
     def test_session_isolation_by_agent_prefix(self):
         with patch("backend.api.chat.match_identity_rule", return_value=None), \
              patch("backend.api.chat._call_hermes", return_value=("ok", [])) as mock_hermes:
-            asyncio.run(chat(ChatRequest(question="hi", agent_id="coder"), payload={}))
+            asyncio.run(chat(
+                ChatRequest(question="hi", agent_id="coder"),
+                payload={"tenant_key": "test", "sub": "test-user"},
+            ))
         _, kwargs = mock_hermes.call_args
         self.assertIn("-coder-", kwargs["session_id"])
 

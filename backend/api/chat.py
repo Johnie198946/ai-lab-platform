@@ -19,6 +19,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, Iterator, List, Literal, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -47,6 +48,18 @@ from backend.services.knowledge_action_capability import (
 )
 from backend.api.knowledge_actions import persist_knowledge_action_proposal
 from backend.services.llm_usage import record_llm_usage
+from backend.services.inference_policy import (
+    InferencePolicyConflict,
+    InferenceQuotaExceeded,
+    decide_inference,
+    release_inference,
+    reserve_inference,
+    settle_inference,
+)
+from backend.services.runtime_placement import (
+    RuntimePlacementConflict,
+    resolve_runtime_placement,
+)
 from backend.services.user_note_context import (
     normalize_inline_notes,
     render_local_note_context,
@@ -134,6 +147,43 @@ HERMES_BRIDGE_PREWARM_URL = os.environ.get(
     "http://host.docker.internal:9118/v1/chat/prewarm",
 )
 HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+
+
+def _bridge_url_for_placement(
+    default_url: str, placement: dict[str, object] | None,
+) -> str:
+    if not placement:
+        return default_url
+    shard_id = str(placement.get("shard_id") or "")
+    try:
+        configured = json.loads(os.environ.get("HERMES_RUNTIME_SHARD_URLS", "{}"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("invalid_runtime_shard_urls") from error
+    if not configured:
+        if shard_id == os.environ.get("QUANTUM_RUNTIME_SHARD_ID", "shard-1"):
+            return default_url
+        raise RuntimePlacementConflict("runtime_shard_url_unavailable")
+    base = urlsplit(str(configured.get(shard_id) or ""))
+    original = urlsplit(default_url)
+    if base.scheme not in {"http", "https"} or not base.netloc or base.path not in {"", "/"}:
+        raise RuntimePlacementConflict("runtime_shard_url_unavailable")
+    return urlunsplit((base.scheme, base.netloc, original.path, original.query, ""))
+
+
+def _combined_usage(*items: dict[str, Any] | None) -> dict[str, Any] | None:
+    available = [item for item in items if isinstance(item, dict) and item]
+    if not available:
+        return None
+    result: dict[str, Any] = {}
+    for field in ("input_tokens", "output_tokens", "total_tokens", "api_calls"):
+        values = [item.get(field) for item in available if item.get(field) is not None]
+        if values:
+            result[field] = sum(int(value) for value in values)
+    for field in ("provider", "model"):
+        result[field] = next(
+            (str(item[field]) for item in reversed(available) if item.get(field)), ""
+        )
+    return result
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
@@ -453,7 +503,10 @@ async def _call_hermes(
         payload["agent_config"] = agent_config
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
         r = await client.post(
-            HERMES_BRIDGE_URL,
+            _bridge_url_for_placement(
+                HERMES_BRIDGE_URL,
+                (agent_config or {}).get("runtime_placement"),
+            ),
             headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
             json=payload,
         )
@@ -519,12 +572,13 @@ async def _call_hermes_status(
     tenant_id: str,
     user_id: str,
     answer_blocks_v1: bool = False,
+    placement: dict[str, object] | None = None,
 ) -> Optional[Dict[str, Any]]:
     """透传 Bridge 状态回读端点，返回状态机 dict（失败返回 None）。
 
     offset>0 时携带 ?offset=N：reasoning 仅返回消息 id>N 的新条（增量轮询，方案 v5）。
     """
-    url = f"{HERMES_BRIDGE_STATUS_URL}/{session_id}"
+    url = f"{_bridge_url_for_placement(HERMES_BRIDGE_STATUS_URL, placement)}/{session_id}"
     params = []
     if consume:
         params.append("consume=1")
@@ -553,8 +607,15 @@ async def _check_cached_answer(
 ) -> Optional[ChatResponse]:
     """断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes。"""
     try:
+        placement = await resolve_runtime_placement({
+            "tenant_key": tenant_id, "sub": user_id,
+        })
         data = await _call_hermes_status(
-            session_id, consume=True, tenant_id=tenant_id, user_id=user_id
+            session_id,
+            consume=True,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            placement=placement.bridge_config(),
         )
     except Exception as e:
         print(f"[chat] 断点检查异常·跳过: {e}")
@@ -1050,9 +1111,33 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         ),
         skill_enabled=_skill_routing_enabled(agent, skill_id),
     )
+    inference = decide_inference(
+        payload,
+        route_class=triage.route_class,
+        confidence=triage.confidence,
+        agency_enabled=bool(main_agent_config["triage"].get("agency_enabled")),
+        model_calls=2 if delegated_target is not None else 1,
+    )
+    main_agent_config["inference_policy"] = inference.bridge_config()
+    try:
+        placement = await resolve_runtime_placement(payload)
+    except RuntimePlacementConflict as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    main_agent_config["runtime_placement"] = placement.bridge_config()
+    effective_request_id = req.request_id or hashlib.sha256(
+        f"{isolated_session_id}\0{req.question}".encode()
+    ).hexdigest()[:32]
+    try:
+        await reserve_inference(payload, effective_request_id, inference)
+    except InferenceQuotaExceeded as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except InferencePolicyConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
     # 透传 Hermes bridge（附真实思维链）。自然语言委派先运行隔离的专属
     # Agent，再由 Main 在父会话中忠实转交，使父会话保留连续上下文。
+    model_attempted = False
+    delegated_usage: dict[str, Any] | None = None
     try:
         if delegated_target is not None:
             child_session_id = _tenant_namespaced_session(
@@ -1068,6 +1153,10 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 question=req.question,
                 policy=policy,
             )
+            child_config = _triaged_agent_config(delegated_target, triage)
+            child_config["inference_policy"] = inference.bridge_config()
+            child_config["runtime_placement"] = placement.bridge_config()
+            model_attempted = True
             child_reply, _ = await _call_hermes_recorded(
                 goal + child_context.evidence,
                 auth_payload=payload,
@@ -1075,8 +1164,9 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 knowledge_capability=child_context.capability,
                 policy_version=child_context.policy_version,
                 knowledge_query=child_context.knowledge_query,
-                agent_config=_triaged_agent_config(delegated_target, triage),
+                agent_config=child_config,
             )
+            delegated_usage = dict(_last_hermes_usage.get())
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                 raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
             goal = _user_hot_memory_goal(
@@ -1089,6 +1179,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             ) + source_context.evidence
 
         if skill_id:
+            model_attempted = True
             reply, reasoning = await _call_hermes_recorded(
                 goal, session_id=isolated_session_id, skill_id=skill_id,
                 auth_payload=payload,
@@ -1098,6 +1189,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 agent_config=main_agent_config,
             )
         else:
+            model_attempted = True
             reply, reasoning = await _call_hermes_recorded(
                 goal, session_id=isolated_session_id,
                 auth_payload=payload,
@@ -1112,9 +1204,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         contribution_payload = {
             **payload, "client_capabilities": req.client_capabilities,
         }
-        contribution_request_id = req.request_id or hashlib.sha256(
-            f"{isolated_session_id}\0{req.question}".encode()
-        ).hexdigest()[:32]
+        contribution_request_id = effective_request_id
         await _enqueue_chat_message(
             payload=contribution_payload, session_id=isolated_session_id,
             request_id=contribution_request_id, role="user", content=req.question,
@@ -1124,6 +1214,11 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 payload=contribution_payload, session_id=isolated_session_id,
                 request_id=contribution_request_id, role="assistant", content=answer,
             )
+        await settle_inference(
+            payload,
+            effective_request_id,
+            _combined_usage(delegated_usage, _last_hermes_usage.get()),
+        )
         return ChatResponse(
             question=req.question,
             answer=answer,
@@ -1141,6 +1236,10 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             feedback_receipt=feedback_payload,
         )
     except Exception as e:
+        if model_attempted:
+            await settle_inference(payload, effective_request_id, None)
+        else:
+            await release_inference(payload, effective_request_id)
         raise HTTPException(
             status_code=502, detail=f"Hermes 调用失败: {e}"
         ) from e
@@ -1207,6 +1306,7 @@ async def chat_status(
         tenant_id=str(payload.get("tenant_key") or "public"),
         user_id=owner_user_id,
         answer_blocks_v1=answer_blocks_v1,
+        placement=(await resolve_runtime_placement(payload)).bridge_config(),
     )
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
@@ -1232,9 +1332,10 @@ async def durable_run_replay(
         "X-Tenant-Id": tenant_id,
         "X-User-Id": user_id,
     }
+    placement = (await resolve_runtime_placement(payload)).bridge_config()
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.get(
-            f"{HERMES_BRIDGE_RUN_URL}/{run_id}",
+            f"{_bridge_url_for_placement(HERMES_BRIDGE_RUN_URL, placement)}/{run_id}",
             params={"after": max(0, after), "answer_blocks_v1": answer_blocks_v1},
             headers=headers,
         )
@@ -1260,9 +1361,10 @@ async def durable_run_blocks(
     user_id = str(payload.get("user_id") or payload.get("sub") or "")
     if not tenant_id or not user_id:
         raise HTTPException(status_code=403, detail="owner context unavailable")
+    placement = (await resolve_runtime_placement(payload)).bridge_config()
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.get(
-            f"{HERMES_BRIDGE_RUN_URL}/{run_id}/blocks",
+            f"{_bridge_url_for_placement(HERMES_BRIDGE_RUN_URL, placement)}/{run_id}/blocks",
             params={
                 "cursor": cursor, "max_blocks": max_blocks, "max_bytes": max_bytes,
             },
@@ -1355,7 +1457,10 @@ async def _call_bridge_stream(
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
         async with client.stream(
             "POST",
-            HERMES_BRIDGE_STREAM_URL,
+            _bridge_url_for_placement(
+                HERMES_BRIDGE_STREAM_URL,
+                (agent_config or {}).get("runtime_placement"),
+            ),
             headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
             json={
                 "goal": _bounded_bridge_goal(goal, knowledge_capability),
@@ -1586,6 +1691,11 @@ async def prewarm_chat(
         agency_enabled=agent.id == DEFAULT_AGENT_ID and not explicit_agent,
         skill_enabled=_skill_routing_enabled(agent, None),
     )
+    try:
+        placement = await resolve_runtime_placement(payload)
+    except RuntimePlacementConflict as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    agent_config["runtime_placement"] = placement.bridge_config()
     capability = mint_capability(
         policy,
         subject_id=session_id,
@@ -1595,7 +1705,9 @@ async def prewarm_chat(
     )
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(
-            HERMES_BRIDGE_PREWARM_URL,
+            _bridge_url_for_placement(
+                HERMES_BRIDGE_PREWARM_URL, placement.bridge_config(),
+            ),
             headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
             json={
                 "goal": "解释一个常见概念",
@@ -1709,6 +1821,10 @@ async def stream_chat(
     async def _gen():
         started = time.perf_counter()
         user_contribution_enqueued = False
+        reservation_active = False
+        model_attempted = False
+        ledger_terminal = False
+        delegated_usage: dict[str, Any] | None = None
         try:
             # 建立 SSE 后再解析 Agent 路由；客户端不再等待数据库查询才收到首帧。
             yield "data: " + json.dumps(
@@ -1776,6 +1892,21 @@ async def stream_chat(
                 ),
                 skill_enabled=_skill_routing_enabled(agent, skill_id),
             )
+            inference = decide_inference(
+                payload,
+                route_class=triage.route_class,
+                confidence=triage.confidence,
+                agency_enabled=bool(
+                    main_agent_config["triage"].get("agency_enabled")
+                ),
+                model_calls=2 if delegated_target is not None else 1,
+            )
+            main_agent_config["inference_policy"] = inference.bridge_config()
+            placement = await resolve_runtime_placement(payload)
+            main_agent_config["runtime_placement"] = placement.bridge_config()
+            await reserve_inference(payload, effective_request_id, inference)
+            reservation_active = True
+            yield f"data: {json.dumps({'type': 'model_route', 'tier': inference.tier, 'policy_version': inference.policy_version, 'max_output_tokens': inference.max_output_tokens}, ensure_ascii=False)}\n\n"
             yield _triage_frame(triage, main_agent_config)
             policy_version = policy.policy_version
             setup_ms = (time.monotonic() - setup_started) * 1000.0
@@ -1804,6 +1935,10 @@ async def stream_chat(
                 )
                 child_policy_version = policy.policy_version
                 try:
+                    child_config = _triaged_agent_config(delegated_target, triage)
+                    child_config["inference_policy"] = inference.bridge_config()
+                    child_config["runtime_placement"] = placement.bridge_config()
+                    model_attempted = True
                     child_reply, _ = await _call_hermes_recorded(
                         goal,
                         auth_payload=payload,
@@ -1811,8 +1946,9 @@ async def stream_chat(
                         knowledge_capability=child_capability,
                         policy_version=child_policy_version,
                         knowledge_query=effective_knowledge_query,
-                        agent_config=_triaged_agent_config(delegated_target, triage),
+                        agent_config=child_config,
                     )
+                    delegated_usage = dict(_last_hermes_usage.get())
                     if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                         raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
                 except Exception as exc:
@@ -1842,6 +1978,7 @@ async def stream_chat(
                 "client_capabilities": req.client_capabilities,
             }
             kwargs["request_id"] = effective_request_id
+            model_attempted = True
             bridge_stream = _call_bridge_stream(
                 routed_goal, isolated_session_id, **kwargs
             )
@@ -1906,6 +2043,19 @@ async def stream_chat(
                     )
                     frame = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event and event.get("type") in {"done", "error"}:
+                    await settle_inference(
+                        payload,
+                        effective_request_id,
+                        (
+                            _combined_usage(
+                                delegated_usage,
+                                event.get("usage")
+                                if isinstance(event.get("usage"), dict)
+                                else None,
+                            )
+                        ),
+                    )
+                    ledger_terminal = True
                     await record_llm_usage(
                         auth_payload=payload,
                         usage_payload=(
@@ -1930,12 +2080,23 @@ async def stream_chat(
             yield "data: " + json.dumps(
                 {
                     "type": "error",
-                    "code": "gateway_setup",
+                    "code": (
+                        "quota"
+                        if isinstance(exc, InferenceQuotaExceeded)
+                        else "request_conflict"
+                        if isinstance(exc, InferencePolicyConflict)
+                        else "gateway_setup"
+                    ),
                     "message": str(exc)[:200],
                 },
                 ensure_ascii=False,
             ) + "\n\n"
         finally:
+            if reservation_active and not ledger_terminal:
+                if model_attempted:
+                    await settle_inference(payload, effective_request_id, None)
+                else:
+                    await release_inference(payload, effective_request_id)
             _streaming_sessions.discard(isolated_session_id)
 
     return StreamingResponse(
@@ -1976,9 +2137,10 @@ async def chat_clarify_submit(
         tenant_id, policy.policy_version,
         owner_user_id,
     )
+    placement = (await resolve_runtime_placement(payload)).bridge_config()
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
-            HERMES_BRIDGE_CLARIFY_URL,
+            _bridge_url_for_placement(HERMES_BRIDGE_CLARIFY_URL, placement),
             json={
                 "session_id": isolated,
                 "response": req.response,
@@ -2008,9 +2170,10 @@ async def chat_stream_cancel(
         tenant_id, policy.policy_version,
         owner_user_id,
     )
+    placement = (await resolve_runtime_placement(payload)).bridge_config()
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
-            HERMES_BRIDGE_CANCEL_URL,
+            _bridge_url_for_placement(HERMES_BRIDGE_CANCEL_URL, placement),
             json={"session_id": isolated},
             headers={
                 "X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN,

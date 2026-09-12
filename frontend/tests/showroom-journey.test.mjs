@@ -97,6 +97,8 @@ test('exact-SHA bootstrap exports, verifies, and executes the target commit upda
   assert.match(deployExactScript, /ssh[^\n]*rm -f -- "\$REMOTE_SCRIPT"/);
   assert.match(deployExactScript, /sha256sum "\$REMOTE_SCRIPT"/);
   assert.match(deployExactScript, /bash "\$REMOTE_SCRIPT" "\$EXPECTED_SHA"/);
+  assert.match(deployExactScript, /AI_LAB_DEPLOY_REMOTE_SUDO/);
+  assert.match(deployExactScript, /sudo -n bash "\$REMOTE_SCRIPT" "\$EXPECTED_SHA"/);
   assert.doesNotMatch(deployExactScript, /\/opt\/ai-lab-platform\/scripts\/update\.sh/);
 });
 

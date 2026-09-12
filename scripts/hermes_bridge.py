@@ -27,6 +27,7 @@ v4.1 (2026-08-10·Supervision 批复返工):
 import ast
 import asyncio
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 import contextvars
 import hashlib
 import ipaddress
@@ -111,6 +112,15 @@ except ModuleNotFoundError:  # pragma: no cover - direct ``python scripts/hermes
 app = FastAPI(title="Hermes Bridge v6.0")
 
 SKILL_ROUTING_OVERRIDES = _REPO_ROOT / "config" / "skill-routing-overrides.yaml"
+
+
+def _isolated_agent_context_kwargs() -> dict[str, bool]:
+    """Never let a cloud tenant inherit the service account's Hermes profile."""
+    return dict(
+        skip_context_files=True,
+        skip_memory=True,
+        load_soul_identity=False,
+    )
 
 
 def _routed_skill_catalog(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
@@ -346,8 +356,13 @@ _user_session_map: dict[str, str] = {}
 _user_state_db_map: dict[str, str] = {}
 # user_id -> 已投递最大消息 id（消费水位线，断点 0ms 回读判定）
 _delivered_watermark: dict[str, int] = {}
-# 全局并发信号量（两级锁序第一级）
-_semaphore = asyncio.Semaphore(2)
+# 全局并发与有界等待（两级锁序第一级）。Bridge 仅接受内网调用，满载时
+# 明确返回可重试错误，避免无界协程堆积拖垮 2C/2G 节点。
+MAX_CONCURRENT_REQUESTS = max(int(os.environ.get("HERMES_MAX_CONCURRENCY", "2")), 1)
+MAX_QUEUED_REQUESTS = max(int(os.environ.get("HERMES_MAX_QUEUE", "8")), 0)
+QUEUE_TIMEOUT_SECONDS = max(float(os.environ.get("HERMES_QUEUE_TIMEOUT_SECONDS", "30")), 0.1)
+_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+_queued_requests = 0
 # 澄清调用按租户限速；内部 Token 只证明调用方身份，不替代成本配额。
 _clarification_rate_lock = threading.Lock()
 _clarification_last_run: dict[str, float] = {}
@@ -371,6 +386,37 @@ ANONYMOUS_LOCK_KEY = "_anonymous"
 _in_flight_users: dict[str, float] = {}
 # 在途判定 stale 阈值（秒）：超过该阈值视为任务僵死，不再兜底 running。
 IN_FLIGHT_STALE_SECONDS = 300
+
+
+@asynccontextmanager
+async def _admit_request():
+    """Bound concurrency and queue depth; callers can retry a saturated shard."""
+    global _queued_requests
+    queued = _semaphore.locked()
+    if queued:
+        if _queued_requests >= MAX_QUEUED_REQUESTS:
+            raise HTTPException(
+                status_code=503,
+                detail="runtime_capacity_exceeded",
+                headers={"Retry-After": "2"},
+            )
+        _queued_requests += 1
+    try:
+        try:
+            await asyncio.wait_for(_semaphore.acquire(), timeout=QUEUE_TIMEOUT_SECONDS)
+        except TimeoutError as error:
+            raise HTTPException(
+                status_code=503,
+                detail="runtime_queue_timeout",
+                headers={"Retry-After": "2"},
+            ) from error
+        try:
+            yield
+        finally:
+            _semaphore.release()
+    finally:
+        if queued:
+            _queued_requests -= 1
 
 
 def _mark_in_flight(user_id: str) -> None:
@@ -470,6 +516,8 @@ class TrustedAgentConfig(BaseModel):
     triage: AgentTriageConfig | None = None
     composition: AgentCompositionConfig | None = None
     knowledge_stage_only: bool | None = None
+    inference_policy: dict[str, Any] | None = None
+    runtime_placement: dict[str, Any] | None = None
 
     @field_validator("allowed_tools", "capability_agent_ids", "knowledge_scope")
     @classmethod
@@ -2679,6 +2727,9 @@ def _run_workflow_node_in_process(
     _ensure_tenant_skill_tool_registered()
     _sandbox_tool_context.value = sandbox
     session_db = _create_sandbox_session_db(sandbox)
+    from agent.runtime_cwd import set_session_cwd
+
+    set_session_cwd(str(sandbox.root))
     agent = None
     timeout_fired = threading.Event()
     timeout_timer = None
@@ -2738,6 +2789,7 @@ def _run_workflow_node_in_process(
             ),
             tool_start_callback=_tool_start,
             tool_complete_callback=_tool_complete,
+            **_isolated_agent_context_kwargs(),
         )
         if execution_id:
             with _workflow_runs_lock:
@@ -4681,6 +4733,50 @@ def _request_triage(agent_config: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _request_inference_policy(agent_config: dict[str, Any]) -> dict[str, Any] | None:
+    policy = agent_config.get("inference_policy")
+    if policy is None:
+        return None
+    if not isinstance(policy, dict) or policy.get("policy_version") != "inference-v1":
+        raise RuntimeError("invalid_inference_policy")
+    tier = str(policy.get("tier") or "")
+    ceilings = {"fast": 1_200, "balanced": 4_000, "reasoning": 12_000}
+    if tier not in ceilings:
+        raise RuntimeError("invalid_inference_tier")
+    try:
+        max_output = int(policy.get("max_output_tokens") or 0)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("invalid_inference_budget") from error
+    if not 1 <= max_output <= ceilings[tier]:
+        raise RuntimeError("invalid_inference_budget")
+    allow_subagents = bool(policy.get("allow_subagents")) and tier == "reasoning"
+    return {
+        "tier": tier,
+        "policy_version": "inference-v1",
+        "max_output_tokens": max_output,
+        "allow_subagents": allow_subagents,
+    }
+
+
+def _request_runtime_placement(agent_config: dict[str, Any]) -> dict[str, Any] | None:
+    placement = agent_config.get("runtime_placement")
+    if placement is None:
+        return None
+    if not isinstance(placement, dict):
+        raise RuntimeError("invalid_runtime_placement")
+    shard_id = str(placement.get("shard_id") or "")
+    local_shard = os.environ.get("QUANTUM_RUNTIME_SHARD_ID", "shard-1").strip()
+    try:
+        generation = int(placement.get("generation") or 0)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("invalid_runtime_generation") from error
+    if shard_id != local_shard:
+        raise RuntimeError("runtime_shard_mismatch")
+    if generation < 1:
+        raise RuntimeError("invalid_runtime_generation")
+    return {"shard_id": shard_id, "generation": generation}
+
+
 def _triage_route_marker(triage: dict[str, Any] | None) -> str:
     """Private marker consumed by the capability hook, never user-authored."""
     if triage is None:
@@ -4864,8 +4960,7 @@ def _prewarm_bridge_agent() -> threading.Thread:
                 quiet_mode=True,
                 platform="cli",
                 ephemeral_system_prompt="warmup",
-                skip_context_files=True,
-                skip_memory=True,
+                **_isolated_agent_context_kwargs(),
             )
             warm_agent.close()
             print(f"[bridge] 实例池预热完成 · 耗时 {(time.monotonic() - t0)*1000:.1f}ms")
@@ -5517,6 +5612,11 @@ def _build_in_process_agent(
     )
     composition = agent_config.get("composition") or {}
     triage = _request_triage(agent_config)
+    inference_policy = _request_inference_policy(agent_config)
+    _request_runtime_placement(agent_config)
+    if inference_policy is not None:
+        tier = inference_policy["tier"].upper()
+        cfg_model = os.environ.get(f"HERMES_{tier}_CHAT_MODEL", "").strip() or cfg_model
     route_class = triage.get("route_class") if triage else None
     note_draft_request = not (agent_config or {}).get("knowledge_stage_only") and _is_note_draft_request(goal)
     if route_class == GENERAL_QA:
@@ -5527,6 +5627,7 @@ def _build_in_process_agent(
     agency_business_surface = composition.get("business_surface") == "agency"
     agency_route_enabled = bool(
         not note_draft_request
+        and (inference_policy is None or inference_policy["allow_subagents"])
         and (
             agency_business_surface
             or (
@@ -5596,6 +5697,7 @@ def _build_in_process_agent(
     )
     delegation_tool_enabled = bool(
         (not note_draft_request)
+        and (inference_policy is None or inference_policy["allow_subagents"])
         and "delegate_task" in allowed_tools
         and (triage is None or route_class == PROFESSIONAL_TASK)
     )
@@ -5677,7 +5779,13 @@ def _build_in_process_agent(
         toolsets_list = []
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
-    _fb = _get_cached_fallback(cfg)  # 常驻单例
+    _fb = (
+        os.environ.get(
+            f"HERMES_{inference_policy['tier'].upper()}_FALLBACK_MODEL", ""
+        ).strip()
+        if inference_policy is not None
+        else _get_cached_fallback(cfg)
+    )
     session_db = _create_sandbox_session_db(sandbox)
     drill_me_enabled = _is_drill_me_goal(goal)
     clarify_round = 0
@@ -5862,14 +5970,18 @@ def _build_in_process_agent(
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         model=cfg_model,
+        **(
+            {"max_tokens": inference_policy["max_output_tokens"]}
+            if inference_policy is not None
+            else {}
+        ),
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
         # The Bridge injects a server-owned tenant prompt below. Loading the
         # host profile's MEMORY/USER files or workspace AGENTS.md here would
         # cross the tenant boundary and can expose operator-only context.
-        skip_context_files=True,
-        skip_memory=True,
+        **_isolated_agent_context_kwargs(),
         session_id=hermes_sid,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
@@ -6622,9 +6734,7 @@ def _run_clarification_in_process(prompt: str) -> tuple[str, dict[str, Any]]:
                 "你是隔离的需求澄清判断器。你没有工具、技能、文件、知识库、记忆或会话访问权。"
                 "只根据本次输入判断下一条最关键问题，或判断信息已足够。严格输出JSON。"
             ),
-            skip_context_files=True,
-            skip_memory=True,
-            load_soul_identity=False,
+            **_isolated_agent_context_kwargs(),
         )
 
         def _interrupt() -> None:
@@ -6686,10 +6796,12 @@ async def clarify_workflow(
         f"transcript={json.dumps([item.model_dump() for item in body.transcript], ensure_ascii=False)}"
     )[:MAX_INPUT]
     try:
-        async with _semaphore:
+        async with _admit_request():
             reply, usage = await asyncio.to_thread(_run_clarification_in_process, prompt)
         raw = json.loads(reply)
         decision = ClarificationDecision.model_validate(raw)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Hermes clarification response invalid") from exc
 
@@ -6720,7 +6832,7 @@ async def _legacy_nonstream_chat(body: GoalRequest, user_id: str) -> dict[str, A
     """Preserve the pre-capability Bridge contract for old internal callers."""
     _mark_in_flight(user_id)
     try:
-        async with _semaphore:
+        async with _admit_request():
             async with _get_user_lock(user_id):
                 hermes_sid = _resolve_hermes_session(user_id)
                 baseline_id = await asyncio.to_thread(_get_baseline_id, hermes_sid)
@@ -6800,7 +6912,7 @@ async def chat(
     )
     _mark_in_flight(user_id)
     try:
-        async with _semaphore:
+        async with _admit_request():
             user_lock = _get_user_lock(user_id)
             async with user_lock:
                 hermes_sid = _resolve_hermes_session(user_id)
