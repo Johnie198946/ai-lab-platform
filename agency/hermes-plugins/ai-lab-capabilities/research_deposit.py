@@ -149,7 +149,16 @@ class ResearchDeposit:
             if not self.allowed(dict(kw, user_message=user_message), read_only=True):
                 return None  # Policy is an overlay, never replace recovery evidence.
             platform = str(getattr(kw.get("platform"), "value", kw.get("platform")) or "").casefold()
-            if (old.get("control") or kw.get("task_purpose") in {"wiki_compile", "research_recovery"}
+            # Cron adds delivery/skill wrappers before the configured prompt.
+            # Resolve only the host's job ID, never IDs supplied in tool inputs.
+            cron_writer = False
+            cron_match = re.fullmatch(r"cron_([0-9a-f]{12})_[0-9_]+", str(scope.get("session_id") or ""))
+            if platform == "cron" and cron_match:
+                from cron.jobs import get_job
+                host_job = get_job(cron_match.group(1)) or {}
+                first_line = re.split(r"[\n。；;，,]", str(host_job.get("prompt") or "").strip(), maxsplit=1)[0]
+                cron_writer = bool(WRITER_CONTROL.search(first_line))
+            if (cron_writer or old.get("control") or kw.get("task_purpose") in {"wiki_compile", "research_recovery"}
                     or (platform == "cron" and WRITER_CONTROL.search(re.split(r"[\n。；;，,]", (user_message or "").strip(), maxsplit=1)[0]))
                     or DEPOSIT_CONTROL.search(user_message or "")):
                 if not old.get("obligation"):

@@ -81,6 +81,22 @@ class ResearchDepositionTests(unittest.TestCase):
         self.deposit = plugin.research_deposition
         self.scope = dict(session_id="session-a", turn_id="turn-a", task_id="task-a", platform="desktop")
 
+    def test_wrapped_cron_writer_uses_host_job_not_wrapped_text(self):
+        scope = dict(self.scope, platform="cron", session_id="cron_abcdef123456_20260912_160000")
+        with patch("cron.jobs.get_job", return_value={"prompt": "Wiki Writer 验收。\n研究沉淀状态"}):
+            self.deposit.pre("[IMPORTANT: scheduled cron]\nresearch_deposit status", **scope)
+        record = self.ctx.state.get(self.deposit.key(scope), {})
+        self.assertTrue(record.get("control"))
+        self.assertFalse(record.get("obligation"))
+
+    def test_wrapped_research_cron_is_not_writer_from_footer(self):
+        scope = dict(self.scope, platform="cron", session_id="cron_abcdef123456_20260912_160001")
+        with patch("cron.jobs.get_job", return_value={"prompt": "研究公开材料。\nWiki Writer handles compilation"}):
+            self.deposit.pre("[IMPORTANT: scheduled cron]\nresearch https://example.org/paper", **scope)
+        record = self.ctx.state.get(self.deposit.key(scope), {})
+        self.assertTrue(record.get("obligation"))
+        self.assertFalse(record.get("control"))
+
     def tearDown(self):
         self.env.stop()
         self.tmp.cleanup()
