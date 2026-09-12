@@ -1,0 +1,101 @@
+diff --git a/tools/browser_tool.py b/tools/browser_tool.py
+--- a/tools/browser_tool.py
++++ b/tools/browser_tool.py
+@@ -1756,6 +1756,20 @@
+         # snapshot/overlay happens solely on the relaunch path below, when no
+         # live browser owns the dir.
+         copy_dir = real_profile_copy_dir(browser)
++        # Direct Chrome launches outlive Hermes and need not have an
++        # agent-browser daemon session. Recover their own persisted endpoint
++        # before any snapshot can rewrite databases held by that live browser.
++        copy_port = None
++        try:
++            with open(os.path.join(copy_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
++                copy_port = int(fh.readline(16).strip())
++        except (OSError, ValueError):
++            pass
++        if copy_port is not None and 1 <= copy_port <= 65535:
++            copy_cdp = f"http://127.0.0.1:{copy_port}"
++            if _cdp_http_ready(copy_cdp, **deadline_kw) and _cdp_on_data_dir(copy_cdp, copy_dir):
++                _real_profile_cdp_cache["cdp"] = copy_cdp
++                return copy_cdp, None
+         existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION, **deadline_kw)
+         if existing and _cdp_http_ready(existing, **deadline_kw) and _cdp_on_data_dir(existing, copy_dir):
+             _real_profile_cdp_cache["cdp"] = existing
+diff --git a/tests/tools/test_browser_profile_endpoint_reuse.py b/tests/tools/test_browser_profile_endpoint_reuse.py
+new file mode 100644
+--- /dev/null
++++ b/tests/tools/test_browser_profile_endpoint_reuse.py
+@@ -0,0 +1,72 @@
++"""Synthetic regression: a Chrome process can outlive its agent-browser daemon."""
++import time
++from unittest.mock import Mock
++import pytest
++
++@pytest.fixture
++def reuse_env(tmp_path, monkeypatch):
++    import tools.browser_tool as bt
++    import hermes_cli.browser_connect as bc
++    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
++    monkeypatch.setattr(bt, '_real_profile_cdp_cache', {})
++    monkeypatch.setattr(bt, '_use_real_profile', lambda: True)
++    monkeypatch.setattr(bt, '_using_lightpanda_engine', lambda: False)
++    monkeypatch.setattr(bc, 'detect_default_chromium', lambda **kw: 'chrome')
++    monkeypatch.setattr(bc, 'real_profile_copy_dir', lambda browser: str(tmp_path))
++    daemon = Mock(return_value=None)
++    snapshot = Mock(return_value=(None, 'synthetic snapshot stop'))
++    monkeypatch.setattr(bt, '_agent_browser_get_cdp', daemon)
++    monkeypatch.setattr(bc, 'snapshot_real_profile', snapshot)
++    ready = Mock(return_value=True)
++    monkeypatch.setattr(bt, '_cdp_http_ready', ready)
++    return bt, bc, tmp_path, daemon, snapshot, ready
++
++def test_live_persisted_endpoint_precedes_daemon_and_snapshot(reuse_env):
++    bt, bc, path, daemon, snapshot, ready = reuse_env
++    (path / 'DevToolsActivePort').write_text('32123\n/synthetic-browser-id\n')
++    deadline = time.monotonic() + 5
++    assert bt._real_profile_cdp(deadline=deadline) == ('http://127.0.0.1:32123', None)
++    ready.assert_called_once_with('http://127.0.0.1:32123', deadline=deadline)
++    daemon.assert_not_called()
++    snapshot.assert_not_called()
++
++@pytest.mark.parametrize('port', ['0', '65536', '-1', 'invalid', '9' * 100])
++def test_invalid_endpoint_does_not_attach(reuse_env, port):
++    bt, bc, path, daemon, snapshot, ready = reuse_env
++    (path / 'DevToolsActivePort').write_text(port + '\n')
++    assert bt._real_profile_cdp()[0] is None
++    ready.assert_not_called()
++    snapshot.assert_called_once()
++
++def test_dead_endpoint_uses_existing_recovery(reuse_env):
++    bt, bc, path, daemon, snapshot, ready = reuse_env
++    (path / 'DevToolsActivePort').write_text('32123\n')
++    ready.return_value = False
++    assert bt._real_profile_cdp()[0] is None
++    daemon.assert_called_once()
++    snapshot.assert_called_once()
++
++def test_directory_identity_is_still_required(reuse_env, monkeypatch):
++    bt, bc, path, daemon, snapshot, ready = reuse_env
++    (path / 'DevToolsActivePort').write_text('32123\n')
++    monkeypatch.setattr(bt, '_cdp_on_data_dir', lambda *args: False)
++    assert bt._real_profile_cdp()[0] is None
++    snapshot.assert_called_once()
++
++def test_deadline_exception_is_not_swallowed(reuse_env):
++    bt, bc, path, daemon, snapshot, ready = reuse_env
++    (path / 'DevToolsActivePort').write_text('32123\n')
++    ready.side_effect = bt.BrowserDeadlineExpired('synthetic deadline')
++    with pytest.raises(bt.BrowserDeadlineExpired):
++        bt._real_profile_cdp(deadline=time.monotonic() + 5)
++    daemon.assert_not_called()
++    snapshot.assert_not_called()
++
++def test_consent_revocation_precedes_reuse(reuse_env, monkeypatch):
++    bt, bc, path, daemon, snapshot, ready = reuse_env
++    (path / 'DevToolsActivePort').write_text('32123\n')
++    monkeypatch.setattr(bt, '_use_real_profile', lambda: False)
++    monkeypatch.setattr(bc, 'cleanup_real_profile_snapshots', Mock())
++    assert bt._real_profile_cdp() == (None, None)
++    ready.assert_not_called()
++    snapshot.assert_not_called()
