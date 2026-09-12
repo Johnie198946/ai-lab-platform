@@ -160,6 +160,11 @@ public struct UsageSummaryDTO: Codable, Hashable {
 
     public var hasVerifiedTokenBasis: Bool { tokenTotalBasis == "verified_requests_only" }
 
+    public var verifiedCalls: Int? {
+        guard hasVerifiedTokenBasis, let unverifiedCalls else { return nil }
+        return max(0, totalCalls - unverifiedCalls)
+    }
+
     public var usageTitle: String {
         hasVerifiedTokenBasis ? "已核验用量" : "服务端用量账本"
     }

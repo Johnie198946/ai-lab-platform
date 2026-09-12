@@ -114,8 +114,14 @@ public struct TokenSummaryCard: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
                     if summary.hasVerifiedTokenBasis {
-                        Text("\(grouped(max(0, summary.totalCalls - summary.missingUsageCalls))) 次已核验调用")
-                        Text("\(grouped(summary.missingUsageCalls)) 次待核验")
+                        if let verifiedCalls = summary.verifiedCalls,
+                           let unverifiedCalls = summary.unverifiedCalls {
+                            Text("\(grouped(verifiedCalls)) 次已核验调用")
+                            Text("\(grouped(unverifiedCalls)) 次待核验")
+                        } else {
+                            Text("已核验调用数未知")
+                            Text("待核验调用数未知")
+                        }
                     } else {
                         Text("\(grouped(summary.totalCalls)) 次调用")
                         Text("成功 \(grouped(summary.successCalls)) · 失败 \(grouped(summary.failedCalls))")
@@ -204,7 +210,7 @@ public struct TokenSummaryCard: View {
                 .frame(height: 12)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("本月 Token 额度")
-                .accessibilityValue("已使用 \(percent(quota.percentUsed))，剩余 \(grouped(quota.remainingTokens)) Token")
+                .accessibilityValue("账本占用 \(percent(quota.percentUsed))，剩余 \(grouped(quota.remainingTokens)) Token")
 
                 HStack(alignment: .top) {
                     quotaMetric("账本已占用", quota.usedTokens, accent: accent)
