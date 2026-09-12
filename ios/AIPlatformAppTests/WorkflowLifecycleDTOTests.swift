@@ -247,6 +247,18 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(center.reviewIntervalTurns, 10)
     }
 
+    func testHermesMemoryCenterDoesNotPresentRequestCancellationAsFailure() {
+        XCTAssertNil(memoryCenterErrorMessage(for: CancellationError()))
+        XCTAssertNil(memoryCenterErrorMessage(for: URLError(.cancelled)))
+        XCTAssertEqual(
+            memoryCenterErrorMessage(for: NSError(
+                domain: "MemoryCenterTests", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "真实错误"]
+            )),
+            "真实错误"
+        )
+    }
+
     func testNativeChatPresentationUsesTruthfulSingleRunningState() {
         let steps = [
             ReasoningStep(

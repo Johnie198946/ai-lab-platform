@@ -232,7 +232,7 @@ public struct MemoryCenterView: View {
             center = try await api.fetchHermesMemory()
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            if let message = memoryCenterErrorMessage(for: error) { errorMessage = message }
         }
     }
 
@@ -254,7 +254,7 @@ public struct MemoryCenterView: View {
             errorMessage = nil
             editor = nil
         } catch {
-            errorMessage = error.localizedDescription
+            if let message = memoryCenterErrorMessage(for: error) { errorMessage = message }
         }
     }
 
@@ -264,9 +264,14 @@ public struct MemoryCenterView: View {
             center = try await api.removeHermesMemory(memoryId: item.id)
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            if let message = memoryCenterErrorMessage(for: error) { errorMessage = message }
         }
     }
+}
+
+func memoryCenterErrorMessage(for error: Error) -> String? {
+    if error is CancellationError || (error as? URLError)?.code == .cancelled { return nil }
+    return error.localizedDescription
 }
 
 private struct MemoryEditorContext: Identifiable {
