@@ -1,6 +1,6 @@
 import pytest
 
-from test_wiki_retrieval_governance import wiki  # noqa: F401
+pytest_plugins = ("test_wiki_retrieval_governance",)
 
 
 @pytest.mark.parametrize("markup", [
