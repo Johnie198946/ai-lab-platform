@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
@@ -47,11 +48,13 @@ from backend.services.workflow_artifacts import (
     artifact_mime_type,
     encode_artifact_content,
     read_verified_artifact,
+    read_verified_artifact_bytes,
     run_root,
     vault_root,
 )
 from backend.services.workflow_executor import (
     cancel_remote,
+    approve_remote_gate,
     executable_plan_projection,
     read_bridge_run,
     retry_remote,
@@ -92,6 +95,9 @@ from backend.services.knowledge_contribution import (
     ContributionCandidate,
 )
 from backend.services.knowledge_candidate_ingest import enqueue_and_schedule
+from backend.services.document_sources import (
+    DocumentSourceError, MAX_PRESENTATION_SOURCE_CHARACTERS, read_document_receipt,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
 logger = logging.getLogger(__name__)
@@ -143,6 +149,7 @@ class WorkflowCreate(BaseModel):
     clarification_mode: str = Field("compatibility", pattern="^(compatibility|dynamic)$")
     showroom_session_id: str | None = Field(None, min_length=1, max_length=120)
     customer_demand_id: str | None = Field(None, min_length=1, max_length=48)
+    source_document_id: str | None = Field(None, min_length=8, max_length=48)
 
 
 class ClarificationResponse(BaseModel):
@@ -185,6 +192,15 @@ class OutputApprovalRequest(BaseModel):
 class RevisionRequest(BaseModel):
     node_id: str = Field(..., min_length=1, max_length=80)
     comment: str = Field(..., min_length=1, max_length=2000)
+
+
+class StageReviewRequest(BaseModel):
+    artifact_id: str = Field(..., min_length=8, max_length=48)
+    expected_hash: str = Field(..., min_length=64, max_length=64)
+    artifact_version: int = Field(..., ge=1)
+    decision: Literal["approve", "revise"]
+    comment: str = Field("", max_length=2000)
+    slide_number: int | None = Field(None, ge=1, le=60)
 
 
 def plan_out(plan: WorkflowPlanVersion) -> dict[str, Any]:
@@ -631,6 +647,22 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
         requirements_snapshot: dict[str, Any] = {
             "clarification_mode": body.clarification_mode
         }
+        if body.source_document_id:
+            try:
+                source = read_document_receipt(tenant(), current_user(payload), body.source_document_id)
+            except DocumentSourceError as exc:
+                raise HTTPException(status_code=404, detail={"code": exc.code, "message": str(exc)}) from exc
+            if source.get("status") != "ready":
+                raise HTTPException(status_code=409, detail={"code": "document_text_unavailable", "message": "源文档尚不可用于生成演示文稿"})
+            if int(source.get("extracted_characters") or 0) > MAX_PRESENTATION_SOURCE_CHARACTERS:
+                raise HTTPException(status_code=422, detail={
+                    "code": "presentation_source_too_long",
+                    "message": f"源文档提取文本超过 {MAX_PRESENTATION_SOURCE_CHARACTERS} 字符，当前版本不会静默截断，请缩短文档后重试",
+                })
+            requirements_snapshot.update({
+                "scenario_id": "document-to-presentation",
+                "source_document": {key: source[key] for key in ("source_id", "source_revision", "content_hash", "filename", "content_type")},
+            })
         if body.showroom_session_id and body.customer_demand_id:
             raise HTTPException(status_code=422, detail="只能续接一个客户上下文")
         if body.showroom_session_id:
@@ -929,7 +961,7 @@ async def respond_to_clarification(
                 prior_snapshot = workflow.requirements_snapshot or {}
                 source_context = {
                     key: prior_snapshot[key]
-                    for key in ("showroom_context", "customer_demand")
+                    for key in ("showroom_context", "customer_demand", "scenario_id", "source_document")
                     if prior_snapshot.get(key)
                 }
                 workflow.requirements_snapshot = {**spec, **source_context}
@@ -1462,7 +1494,7 @@ async def delete_workflow(
                     select(WorkflowExecution).where(
                         WorkflowExecution.workflow_id == workflow.id,
                         WorkflowExecution.status.in_(
-                            ["queued", "running", "awaiting_review"]
+                            ["queued", "running", "awaiting_approval", "awaiting_review"]
                         ),
                     )
                 )
@@ -2180,7 +2212,7 @@ async def start_workflow(
                 select(WorkflowExecution).where(
                     WorkflowExecution.workflow_id == workflow.id,
                     WorkflowExecution.tenant_key == tenant(),
-                    WorkflowExecution.status.in_(["queued", "running", "awaiting_review"]),
+                    WorkflowExecution.status.in_(["queued", "running", "awaiting_approval", "awaiting_review"]),
                 ).limit(1)
             )
         ).scalar_one_or_none()
@@ -2238,7 +2270,7 @@ async def active_workflow_executions(payload: dict = Depends(require_auth)):
                 WorkflowExecution.tenant_key == tenant(),
                 WorkflowDefinition.created_by == current_user(payload),
                 WorkflowDefinition.archived_at.is_(None),
-                WorkflowExecution.status.in_(["queued", "running", "awaiting_review", "failed"]),
+                WorkflowExecution.status.in_(["queued", "running", "awaiting_approval", "awaiting_review", "failed"]),
             )
             .order_by(WorkflowExecution.created_at.desc())
         )).all())
@@ -2335,6 +2367,7 @@ async def stream_events(
                     )
                     yield f"id: {event.id}\nevent: {event.event_type}\ndata: {data}\n\n"
                 if execution.status in {
+                    "awaiting_approval",
                     "awaiting_review",
                     "completed",
                     "failed",
@@ -2539,6 +2572,32 @@ async def get_artifact_content(
         }
 
 
+@router.get("/workflow-executions/{execution_id}/artifacts/{artifact_id}/download")
+async def download_artifact(execution_id: str, artifact_id: str, payload: dict = Depends(require_auth)):
+    async with SessionLocal() as db:
+        execution = await owned_execution(db, execution_id, payload)
+        artifact = (await db.execute(select(WorkflowArtifact).where(
+            WorkflowArtifact.id == artifact_id,
+            WorkflowArtifact.execution_id == execution.id,
+        ))).scalar_one_or_none()
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="工作流素材不存在")
+        root = run_root(execution).resolve()
+        path = (root / artifact.relative_path).resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(status_code=404, detail="工作流素材文件不存在")
+        try:
+            data = read_verified_artifact_bytes(path, artifact.content_hash)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        safe_title = re.sub(r"[^\w\u4e00-\u9fff .-]+", "_", artifact.title).strip() or artifact.id
+        extension = artifact_extension(artifact)
+        return Response(
+            content=data, media_type=artifact_mime_type(artifact),
+            headers={"Content-Disposition": f'attachment; filename="{artifact.id}.{extension}"; filename*=UTF-8\'\'{quote(safe_title)}.{extension}', "X-Content-SHA256": artifact.content_hash, "Cache-Control": "private, no-store"},
+        )
+
+
 async def _recover_artifact_content(
     execution: WorkflowExecution,
     artifact: WorkflowArtifact,
@@ -2678,6 +2737,64 @@ async def request_revision(
                 comment=body.comment,
             )
         )
+        await db.commit()
+        return execution_out(execution)
+
+
+@router.post("/workflow-executions/{execution_id}/review-stage")
+async def review_presentation_stage(execution_id: str, body: StageReviewRequest, payload: dict = Depends(require_auth)):
+    async with SessionLocal() as db:
+        execution = await owned_execution(db, execution_id, payload)
+        if execution.status not in {"awaiting_approval", "awaiting_review"}:
+            raise HTTPException(status_code=409, detail="当前没有待确认的演示文稿阶段")
+        artifact = (await db.execute(select(WorkflowArtifact).where(
+            WorkflowArtifact.id == body.artifact_id,
+            WorkflowArtifact.execution_id == execution.id,
+        ))).scalar_one_or_none()
+        metadata = artifact.metadata_json if artifact else {}
+        version = int((metadata or {}).get("artifact_version") or 0)
+        if artifact is None or artifact.content_hash != body.expected_hash.lower() or version != body.artifact_version:
+            raise HTTPException(status_code=409, detail={"code": "stale_artifact_approval", "message": "成果版本已变化，请刷新后重新确认"})
+        node = await db.get(WorkflowNodeRun, artifact.node_run_id) if artifact.node_run_id else None
+        gate = str((metadata or {}).get("approval_gate") or "")
+        if not node or version != node.attempt or (execution.status == "awaiting_approval" and not gate):
+            raise HTTPException(status_code=409, detail="成果不属于可确认阶段")
+        root = run_root(execution).resolve()
+        artifact_path = (root / artifact.relative_path).resolve()
+        if root not in artifact_path.parents or not artifact_path.is_file():
+            raise HTTPException(status_code=409, detail={"code": "artifact_missing", "message": "待确认成果文件不存在"})
+        try:
+            read_verified_artifact_bytes(artifact_path, artifact.content_hash)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={"code": "tampered_artifact", "message": "待确认成果完整性校验失败"}) from exc
+        if body.decision == "approve" and (gate == "design" or artifact_extension(artifact) == "pptx") and metadata.get("preview_status") != "ready":
+            raise HTTPException(status_code=409, detail={"code": "rendered_preview_required", "message": metadata.get("preview_error") or "必须先生成真实渲染预览"})
+        comment = body.comment
+        if body.slide_number:
+            comment = f"第 {body.slide_number} 页：{comment}"
+        db.add(WorkflowApproval(
+            id=uid("wfa"), workflow_id=execution.workflow_id, execution_id=execution.id,
+            plan_id=artifact.id, plan_hash=artifact.content_hash, activation_revision=version,
+            approval_type=f"business_{gate or 'final'}", decision=body.decision,
+            actor_id=current_user(payload), comment=comment,
+        ))
+        if body.decision == "revise":
+            await _reset_from_node(db, execution, node.node_id)
+            try:
+                await retry_remote(execution.id, node.node_id)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"Hermes 修订暂不可用：{str(exc)[:200]}") from exc
+        elif gate:
+            try:
+                await approve_remote_gate(execution.id, node.node_id, version, artifact.id, artifact.content_hash)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"Hermes 阶段确认暂不可用：{str(exc)[:200]}") from exc
+            execution.status = "queued"
+        else:
+            execution.status = "completed"
+            execution.finished_at = now()
+            workflow = await owned_workflow(db, execution.workflow_id, payload)
+            workflow.status = "ready"
         await db.commit()
         return execution_out(execution)
 

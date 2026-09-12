@@ -3,8 +3,7 @@
 //  AIPlatformApp
 //
 //  Design System Tokens & Styling Definitions
-//  Compliant with Apple Human Interface Guidelines (HIG) & iOS 17+ Dark/Light Mode
-//  Quantum Pearl 全域设计令牌（冷白珠光、青蓝紫品牌光谱）
+//  iOS 17+ light-only interface. Imported documents keep their original colors.
 //
 
 import SwiftUI
@@ -29,7 +28,7 @@ public enum AppTheme {
         public static let emberAmber = Color(hex: "F2A15F")
         public static let emberCream = Color(hex: "FFF7EC")
         public static let emberInk = Color(hex: "2B1811")
-        /// 历史命名兼容：交互入口已映射到 Ember，不再代表视觉上的蓝/紫。
+        /// 历史命名兼容：交互入口沿用当前蓝紫语义色。
         public static let interactiveBlue = Color(hex: "8057E8")
         public static let interactiveViolet = Color(hex: "6845D6")
 
@@ -107,7 +106,7 @@ public enum AppTheme {
         public static let codeWindowGreen = Color(hex: "27C93F")
         public static let codeSyntaxForeground = Color(hex: "E6EDF3")
         
-        // Ember Glass 三层深色画布：charcoal → smoked cocoa → raised glass。
+        // 当前产品浅紫白画布。
         public static var background: Color { adaptive("F8F7FC", "17141F") }
         public static var secondaryBackground: Color { adaptive("F1EEFA", "211D2B") }
         public static var tertiaryBackground: Color { adaptive("E8E3F3", "2B2637") }
@@ -149,13 +148,7 @@ public enum AppTheme {
         
         // MARK: - 双模式自适应色辅助
         private static func adaptive(_ light: String, _ dark: String) -> Color {
-            #if os(iOS)
-            return Color(uiColor: UIColor { trait in
-                trait.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light)
-            })
-            #else
             return Color(hex: light)
-            #endif
         }
     }
 
@@ -292,7 +285,7 @@ private struct CardShadowModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .shadow(
-                color: colorScheme == .dark ? Color.black.opacity(0.18) : Color(hex: "6B5A8A").opacity(0.10),
+                color: Color(hex: "6B5A8A").opacity(0.10),
                 radius: 20,
                 x: 0,
                 y: 4
@@ -321,7 +314,6 @@ public struct SoftButtonStyle: ButtonStyle {
 }
 
 public struct QuantumCardModifier: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public func body(content: Content) -> some View {
@@ -334,7 +326,7 @@ public struct QuantumCardModifier: ViewModifier {
             }
             .contentShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
             .shadow(
-                color: colorScheme == .dark ? Color.black.opacity(0.24) : Color(hex: "6B5A8A").opacity(0.10),
+                color: Color(hex: "6B5A8A").opacity(0.10),
                 radius: 20,
                 x: 0,
                 y: 4
@@ -381,7 +373,6 @@ public struct QuantumPrimaryButtonStyle: ButtonStyle {
 
 /// 冷白珠光环境底景。光晕保持静态，避免持续动画和额外解码成本。
 public struct QuantumMistBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
 
     public init() {}
 

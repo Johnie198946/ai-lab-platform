@@ -226,6 +226,5 @@ public struct TokenSummaryCard: View {
 #Preview("TokenSummaryCard - Dark") {
     TokenSummaryCard()
         .environmentObject(AppState())
-        .preferredColorScheme(.dark)
         .padding()
 }

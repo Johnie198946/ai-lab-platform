@@ -8,6 +8,7 @@ context compression, model routing and exact usage accounting.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 from datetime import datetime, timedelta, timezone
@@ -258,6 +259,13 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
             "composition": task_agent.composition_manifest or {},
         } if task_agent else {},
     }
+    source = ((workflow.requirements_snapshot or {}).get("source_document") if workflow else None)
+    if source:
+        from backend.services.document_sources import document_text
+        text, receipt = document_text(execution.tenant_key, str(workflow.created_by), str(source["source_id"]))
+        if receipt["content_hash"] != source.get("content_hash") or receipt["source_revision"] != source.get("source_revision"):
+            raise RuntimeError("source document revision changed after approval")
+        payload["source_document"] = {**source, "text": text}
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             f"{bridge_base_url()}/v1/workflow-runs",
@@ -384,6 +392,69 @@ async def _artifact_exists(db: AsyncSession, execution_id: str, event_id: str) -
     return any((item or {}).get("bridge_event_id") == event_id for item in rows)
 
 
+async def _assert_approved_presentation_projection(
+    db: AsyncSession, execution: WorkflowExecution, artifact: dict[str, Any], render_type: str,
+) -> None:
+    if render_type != "presentation":
+        return
+    binding = artifact.get("approved_design") or {}
+    approval = await db.scalar(select(WorkflowApproval).where(
+        WorkflowApproval.execution_id == execution.id,
+        WorkflowApproval.approval_type == "business_design",
+        WorkflowApproval.decision == "approve",
+        WorkflowApproval.plan_id == binding.get("artifact_id"),
+        WorkflowApproval.plan_hash == binding.get("content_hash"),
+        WorkflowApproval.activation_revision == binding.get("artifact_version"),
+    ))
+    design = await db.get(WorkflowArtifact, binding.get("artifact_id")) if approval else None
+    if not design or design.execution_id != execution.id or design.content_hash != binding.get("content_hash"):
+        raise ValueError("approved presentation design binding is missing or stale")
+    from backend.services.presentation_scenario import validate_theme
+    from backend.services.workflow_artifacts import read_verified_artifact, run_root
+    approved = json.loads(read_verified_artifact(run_root(execution) / design.relative_path, design.content_hash))
+    final = json.loads(str(artifact.get("content") or ""))
+    if validate_theme(final.get("theme")) != validate_theme(approved.get("theme")):
+        raise ValueError("final presentation theme differs from approved design")
+    outline_binding = artifact.get("approved_outline") or {}
+    outline_approval = await db.scalar(select(WorkflowApproval).where(
+        WorkflowApproval.execution_id == execution.id,
+        WorkflowApproval.approval_type == "business_outline",
+        WorkflowApproval.decision == "approve",
+        WorkflowApproval.plan_id == outline_binding.get("artifact_id"),
+        WorkflowApproval.plan_hash == outline_binding.get("content_hash"),
+        WorkflowApproval.activation_revision == outline_binding.get("artifact_version"),
+    ))
+    outline_artifact = (
+        await db.get(WorkflowArtifact, outline_binding.get("artifact_id"))
+        if outline_approval
+        else None
+    )
+    if (
+        not outline_artifact
+        or outline_artifact.execution_id != execution.id
+        or outline_artifact.content_hash != outline_binding.get("content_hash")
+    ):
+        raise ValueError("approved presentation outline binding is missing or stale")
+    outline = json.loads(
+        read_verified_artifact(
+            run_root(execution) / outline_artifact.relative_path,
+            outline_artifact.content_hash,
+        )
+    )
+    final_shape = [
+        (str(item.get("layout") or ""), str(item.get("title") or "").strip())
+        for item in final.get("slides") or []
+        if isinstance(item, dict)
+    ]
+    outline_shape = [
+        (str(item.get("layout") or ""), str(item.get("title") or "").strip())
+        for item in outline.get("slides") or []
+        if isinstance(item, dict)
+    ]
+    if final_shape != outline_shape:
+        raise ValueError("final presentation differs from approved outline structure")
+
+
 def artifact_storage_contract(
     artifact: dict[str, Any], *, event_id: str, node: WorkflowNodeRun
 ) -> tuple[str, dict[str, Any]]:
@@ -394,6 +465,9 @@ def artifact_storage_contract(
         "topology": ("json", "application/json"),
         "flowchart": ("json", "application/json"),
         "data": ("json", "application/json"),
+        "presentation_outline": ("json", "application/json"),
+        "presentation_design": ("json", "application/json"),
+        "presentation": ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
     }
     aliases = {"md": "markdown", "docx": "word", "flow": "flowchart", "process": "flowchart"}
     declared = str(artifact.get("render_type") or artifact.get("artifact_type") or "").strip().lower()
@@ -412,6 +486,10 @@ def artifact_storage_contract(
         "provider": node.provider_used,
         "render_type": render_type,
         "mime_type": mime_type,
+        "approval_gate": artifact.get("approval_gate"),
+        "artifact_version": int(artifact.get("artifact_version") or getattr(node, "attempt", 1) or 1),
+        "approved_design": artifact.get("approved_design"),
+        "approved_outline": artifact.get("approved_outline"),
     }
     return extension, metadata
 
@@ -458,8 +536,11 @@ async def project_event(
             extension, artifact_metadata = artifact_storage_contract(
                 artifact, event_id=event_id, node=node
             )
-            db.add(
-                store_artifact(
+            try:
+                await _assert_approved_presentation_projection(
+                    db, execution, artifact, artifact_metadata["render_type"]
+                )
+                stored = store_artifact(
                     execution,
                     node_run_id=node.id,
                     kind=str(artifact.get("kind") or "draft"),
@@ -469,7 +550,53 @@ async def project_event(
                     metadata=artifact_metadata,
                     extension=extension,
                 )
-            )
+            except Exception as exc:
+                execution.status = "failed"
+                execution.finished_at = utcnow()
+                execution.error_message = f"成果生成失败：{str(exc)[:500]}"
+                node.status = "failed"
+                node.error_message = execution.error_message
+                event_type = "artifact_generation_failed"
+                message = execution.error_message
+                stored = None
+            if stored is None:
+                pass
+            else:
+                db.add(stored)
+            if stored is not None and extension == "pptx":
+                from backend.services.presentation_renderer import render_pptx_pdf
+                from backend.services.workflow_artifacts import run_root
+                try:
+                    preview = render_pptx_pdf(run_root(execution) / stored.relative_path)
+                    preview_artifact = store_artifact(
+                        execution, node_run_id=node.id, kind="preview",
+                        title=f"{stored.title} 预览", content=preview, source_kind="pptx_render",
+                        metadata={"parent_artifact_id": stored.id, "parent_content_hash": stored.content_hash, "artifact_version": artifact_metadata["artifact_version"]},
+                        extension="pdf",
+                    )
+                    db.add(preview_artifact)
+                    stored.metadata_json = {**stored.metadata_json, "preview_status": "ready", "preview_artifact_id": preview_artifact.id, "preview_content_hash": preview_artifact.content_hash}
+                except Exception as exc:
+                    stored.metadata_json = {**stored.metadata_json, "preview_status": "failed", "preview_error": str(exc)[:300]}
+            elif stored is not None and artifact_metadata["render_type"] == "presentation_design":
+                from backend.services.presentation_renderer import build_pptx, render_pptx_pdf
+                from backend.services.workflow_artifacts import run_root
+                try:
+                    sample = store_artifact(
+                        execution, node_run_id=node.id, kind="draft", title=f"{stored.title} 可编辑样稿",
+                        content=build_pptx(str(artifact["content"])), source_kind="design_sample",
+                        metadata={"parent_artifact_id": stored.id, "artifact_version": artifact_metadata["artifact_version"]}, extension="pptx",
+                    )
+                    db.add(sample)
+                    preview = store_artifact(
+                        execution, node_run_id=node.id, kind="preview", title=f"{stored.title} 渲染预览",
+                        content=render_pptx_pdf(run_root(execution) / sample.relative_path), source_kind="pptx_render",
+                        metadata={"parent_artifact_id": sample.id, "parent_content_hash": sample.content_hash, "design_artifact_id": stored.id, "design_content_hash": stored.content_hash, "artifact_version": artifact_metadata["artifact_version"]}, extension="pdf",
+                    )
+                    db.add(preview)
+                    stored.metadata_json = {**stored.metadata_json, "preview_status": "ready", "preview_artifact_id": preview.id, "preview_content_hash": preview.content_hash, "sample_artifact_id": sample.id, "sample_content_hash": sample.content_hash}
+                except Exception as exc:
+                    stored.metadata_json = {**stored.metadata_json, "preview_status": "failed", "preview_error": str(exc)[:300]}
         if route.get("reason"):
             execution.route_reason = str(route["reason"])[:500]
         _rollup_usage(execution, node_rows)
@@ -478,6 +605,9 @@ async def project_event(
         execution.progress = 100
         execution.finished_at = utcnow()
         _set_usage(execution, event.get("usage") or {})
+    elif event_type == "run_awaiting_approval":
+        execution.status = "awaiting_approval"
+        execution.finished_at = None
     elif event_type == "run_failed":
         execution.status = "failed"
         execution.error_message = str(event.get("error") or message)[:2000]
@@ -515,7 +645,7 @@ async def project_event(
         category=event.get("category") or event_type,
         status=event.get("status") or (
             "running" if event_type in {"run_started", "node_started", "tool_start", "agent_spawn"}
-            else "failed" if event_type in {"run_failed", "evaluation_failed"}
+            else "failed" if event_type in {"run_failed", "evaluation_failed", "artifact_generation_failed"}
             else "done"
         ),
         tool=event.get("tool"),
@@ -563,6 +693,8 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
             list(snapshot.get("events") or []), execution.bridge_event_seq
         ):
             await project_event(db, execution, node_rows, event)
+            if execution.status == "failed":
+                break
         if not snapshot.get("events") and snapshot.get("status") == "running":
             execution.status = "running"
             execution.started_at = execution.started_at or utcnow()
@@ -604,6 +736,15 @@ async def retry_remote(execution_id: str, from_node_id: str | None = None) -> No
             f"{bridge_base_url()}/v1/workflow-runs/{execution_id}/retry",
             headers=bridge_headers(),
             json={"from_node_id": from_node_id},
+        )
+    response.raise_for_status()
+
+
+async def approve_remote_gate(execution_id: str, node_id: str, artifact_version: int, artifact_id: str, expected_hash: str) -> None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(
+            f"{bridge_base_url()}/v1/workflow-runs/{execution_id}/approve-gate",
+            headers=bridge_headers(), json={"node_id": node_id, "artifact_version": artifact_version, "artifact_id": artifact_id, "expected_hash": expected_hash},
         )
     response.raise_for_status()
 

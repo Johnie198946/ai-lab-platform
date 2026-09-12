@@ -120,8 +120,16 @@ def _docx_bytes(content: str) -> bytes:
     return buffer.getvalue()
 
 
-def encode_artifact_content(content: str, extension: str) -> bytes:
-    return _docx_bytes(content) if str(extension).lower().lstrip(".") == "docx" else content.encode("utf-8")
+def encode_artifact_content(content: str | bytes, extension: str) -> bytes:
+    if isinstance(content, bytes):
+        return content
+    normalized = str(extension).lower().lstrip(".")
+    if normalized == "docx":
+        return _docx_bytes(content)
+    if normalized == "pptx":
+        from backend.services.presentation_renderer import build_pptx
+        return build_pptx(content)
+    return content.encode("utf-8")
 
 
 _MAX_PREVIEW_BYTES = 8 * 1024 * 1024
@@ -141,6 +149,7 @@ def artifact_mime_type(artifact: WorkflowArtifact) -> str:
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "pdf": "application/pdf",
     }
     return known.get(extension) or mimetypes.guess_type(f"artifact.{extension}")[0] or "application/octet-stream"
 
@@ -182,6 +191,8 @@ def _preview_from_bytes(path: Path, data: bytes) -> str:
         return f"data:{image_mime};base64,{encoded}"
     if image_mime and image_mime.startswith("image/"):
         raise ValueError("unsupported image artifact")
+    if path.suffix.lower() in {".pptx", ".pdf"}:
+        raise ValueError("binary artifact requires authenticated download")
     if path.suffix.lower() != ".docx":
         return data.decode("utf-8", errors="replace")
     try:
@@ -226,6 +237,13 @@ def read_verified_artifact(path: Path, expected_hash: str) -> str:
     return _preview_from_bytes(path, data)
 
 
+def read_verified_artifact_bytes(path: Path, expected_hash: str) -> bytes:
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != str(expected_hash or "").lower():
+        raise ValueError("artifact content hash mismatch")
+    return data
+
+
 def append_event(execution: WorkflowExecution, record: dict[str, Any]) -> None:
     path = run_root(execution) / "events.jsonl"
     with path.open("a", encoding="utf-8") as handle:
@@ -238,7 +256,7 @@ def store_artifact(
     node_run_id: str | None,
     kind: str,
     title: str,
-    content: str,
+    content: str | bytes,
     source_url: str | None = None,
     source_kind: str | None = None,
     metadata: dict[str, Any] | None = None,

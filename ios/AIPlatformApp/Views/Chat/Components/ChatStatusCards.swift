@@ -71,7 +71,6 @@ public enum InFlightPhase: Equatable, Sendable {
 }
 
 public struct NoteDraftCard: View {
-    @Environment(\.colorScheme) private var colorScheme
     @State private var showingDetails = false
 
     public let draft: NoteDraftBlock
@@ -117,7 +116,7 @@ public struct NoteDraftCard: View {
         HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
             ZStack {
                 Circle()
-                    .fill(AppTheme.Colors.quantumViolet.opacity(colorScheme == .dark ? 0.24 : 0.12))
+                    .fill(AppTheme.Colors.quantumViolet.opacity(0.12))
                 Image(systemName: hasMergeCandidates ? "arrow.triangle.merge" : "note.text.badge.plus")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(AppTheme.Icons.intelligence)

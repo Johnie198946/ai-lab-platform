@@ -13,6 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
 ARG AI_LAB_RUNTIME_UID=10001
 ARG AI_LAB_RUNTIME_GID=10001
 RUN apk add --no-cache libuuid=2.41.6-r1 \
+        libreoffice font-noto font-noto-cjk=0_git20220127-r1 \
     && addgroup -S -g "$AI_LAB_RUNTIME_GID" ailab \
     && adduser -S -D -u "$AI_LAB_RUNTIME_UID" -G ailab -h /home/ailab -s /sbin/nologin ailab
 

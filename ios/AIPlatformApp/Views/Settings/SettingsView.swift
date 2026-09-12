@@ -2794,5 +2794,4 @@ private extension String {
     SettingsView()
         .environmentObject(AppState())
         .environmentObject(APIClient.shared)
-        .preferredColorScheme(.dark)
 }

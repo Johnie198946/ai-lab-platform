@@ -33,6 +33,7 @@ from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router, websocket_router as showroom_websocket_router
 from backend.api.customer_demands import router as customer_demands_router
 from backend.api.workflows import router as workflows_router
+from backend.api.documents import router as documents_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
 from backend.api.knowledge_sync import router as knowledge_sync_router
 from backend.api.knowledge_actions import router as knowledge_actions_router
@@ -205,6 +206,7 @@ app.include_router(showroom_websocket_router)
 app.include_router(customer_demands_router, dependencies=[Depends(require_current_agreement)])
 # 可执行工作流：计划审批、持久执行、素材复核
 app.include_router(workflows_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(documents_router, dependencies=[Depends(require_current_agreement)])
 # QuantumWorkspace 项目控制面。执行事实继续由 workflows/chat 路由持有。
 app.include_router(quantum_workspace_router, dependencies=[Depends(require_current_agreement)])
 # Authen HMAC webhook + signed-capability Knowledge Gateway use their own auth.

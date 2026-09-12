@@ -46,6 +46,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
+        UIUserInterfaceStyle: Light
     settings:
       base:
         CODE_SIGN_ENTITLEMENTS: AIPlatformApp/AIPlatformApp.entitlements

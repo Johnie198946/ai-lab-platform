@@ -12,7 +12,6 @@ public struct VoiceInputView: View {
     public var onTranscript: (String) -> Void
     public var onDismiss: () -> Void
 
-    @Environment(\.colorScheme) private var colorScheme
 
     public var body: some View {
         ZStack {
@@ -265,5 +264,4 @@ public struct WaveformView: View {
 
 #Preview("VoiceInputView - Dark") {
     VoiceInputView(service: SpeechRecognizerService(), onTranscript: { _ in }, onDismiss: {})
-        .preferredColorScheme(.dark)
 }

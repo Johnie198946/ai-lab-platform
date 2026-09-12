@@ -59,6 +59,7 @@ public struct AIPlatformApp: App {
                 AppRootCoordinatorView()
                 #endif
             }
+                .preferredColorScheme(.light)
                 .environmentObject(appState)
                 .environmentObject(apiClient)
                 .environmentObject(workflowActivities)

@@ -49,7 +49,9 @@ def test_api_and_bridge_dependency_boundary_excludes_packaged_hermes():
     assert re.search(r'^pyjwt==2\.13\.0 \\$', api_lock, re.MULTILINE)
     assert not re.search(r'^(?:python-jose|ecdsa|rsa|pyasn1)==', api_lock, re.MULTILINE)
     assert 'sha256:7cec5b856506da6defb290f30c9ee687d5f5e8cb0bd3f6459dde43b0b4fa40ef' in api_lock
+    assert 'sha256:1489e263a8048bb8b6a8bac662eb2d402ea5d2b7b4699b72f385f1e2772db105' in api_lock
     assert 'sha256:0dd2064cbc55aaec028ef5fbb60fa47bb6c3e7918e07ff17935284b227a9d2df' in api_lock
+    assert 'sha256:e491916b378fba47242221bb9ead245211b70d504f495d105d17b14a24b4907c' in api_lock
     for dependency in ('firecrawl-anydoc', 'nemo-relay', 'snowballstemmer'):
         assert dependency in bridge_input
         assert f'{dependency}==' in bridge_lock

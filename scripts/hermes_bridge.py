@@ -570,7 +570,6 @@ class GoalRequest(BaseModel):
     def _trusted_agent_config(cls, value: dict[str, Any]) -> dict[str, Any]:
         return TrustedAgentConfig.model_validate(value).model_dump(exclude_none=True)
 
-
 class WorkflowPlanRequest(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=64)
     workflow_id: str = Field(..., min_length=1, max_length=64)
@@ -609,11 +608,25 @@ class WorkflowRunRequest(BaseModel):
     knowledge_capability: str = Field(..., min_length=20)
     knowledge_policy_version: str = Field(..., min_length=8, max_length=80)
     agent_config: dict[str, Any] = Field(default_factory=dict)
+    source_document: dict[str, Any] | None = None
 
     @field_validator("agent_config")
     @classmethod
     def _trusted_agent_config(cls, value: dict[str, Any]) -> dict[str, Any]:
         return TrustedAgentConfig.model_validate(value).model_dump(exclude_none=True)
+
+    @field_validator("source_document")
+    @classmethod
+    def _trusted_source_document(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        allowed = {"source_id", "source_revision", "content_hash", "filename", "content_type", "text"}
+        if set(value) - allowed or not re.fullmatch(r"doc_[a-f0-9]{32}", str(value.get("source_id") or "")) or not re.fullmatch(r"[a-f0-9]{64}", str(value.get("content_hash") or "")):
+            raise ValueError("invalid private source document")
+        text = str(value.get("text") or "")
+        if not text or len(text) > 8_000:
+            raise ValueError("private source document text exceeds 8000 characters; truncation is forbidden")
+        return {key: value[key] for key in allowed if key in value}
 
 
 class ClarificationTurn(BaseModel):
@@ -642,6 +655,15 @@ class ClarificationDecision(BaseModel):
 
 class WorkflowRetryRequest(BaseModel):
     from_node_id: str | None = Field(None, max_length=80)
+
+
+class WorkflowGateApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(..., min_length=1, max_length=80)
+    artifact_version: int = Field(..., ge=1)
+    artifact_id: str = Field(..., pattern=r"^wfa_[a-f0-9]{32}$")
+    expected_hash: str = Field(..., pattern=r"^[a-f0-9]{64}$")
 
 
 class AgentEvaluationRequest(BaseModel):
@@ -2849,8 +2871,11 @@ def _workflow_artifact_contract(node: dict[str, Any]) -> dict[str, str]:
         "拓扑图": "topology", "topology": "topology",
         "流程图": "flowchart", "flow": "flowchart", "flowchart": "flowchart",
         "csv": "data", "json": "data",
+        "presentation_outline": "presentation_outline",
+        "presentation_design": "presentation_design",
+        "presentation": "presentation",
     }
-    render_type = aliases.get(raw_type, raw_type if raw_type in {"markdown", "word", "chart", "topology", "flowchart", "data"} else "markdown")
+    render_type = aliases.get(raw_type, raw_type if raw_type in {"markdown", "word", "chart", "topology", "flowchart", "data", "presentation_outline", "presentation_design", "presentation"} else "markdown")
     extension, mime_type = {
         "markdown": ("md", "text/markdown"),
         "word": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
@@ -2858,6 +2883,9 @@ def _workflow_artifact_contract(node: dict[str, Any]) -> dict[str, str]:
         "topology": ("json", "application/json"),
         "flowchart": ("json", "application/json"),
         "data": ("json", "application/json"),
+        "presentation_outline": ("json", "application/json"),
+        "presentation_design": ("json", "application/json"),
+        "presentation": ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
     }[render_type]
     if render_type == "data" and raw_type == "csv":
         extension, mime_type = "csv", "text/csv"
@@ -2874,12 +2902,97 @@ def _workflow_artifact_instruction(contract: dict[str, str]) -> str:
         return "只输出 CSV 表头与数据行，不要添加 Markdown 围栏。" if contract["extension"] == "csv" else "只输出合法 JSON 对象或数组；不要添加 Markdown 围栏或解释文字。"
     if render_type == "word":
         return "只输出 Word 正文纯文本，用空行分段；平台将生成真实 DOCX，不要使用 Markdown 标记。"
+    if render_type == "presentation_outline":
+        return '只输出合法 JSON：{"title":"标题","slides":[{"layout":"title|section|bullets|two_column|chart|table|conclusion","title":"页标题","key_points":["要点"]}]}。'
+    if render_type == "presentation_design":
+        return '只输出合法 JSON：{"title":"设计样稿","theme":{"colors":{"primary":"#8057E8","text":"#191521","muted":"#686275","pale":"#F1EEFA","background":"#FFFFFF","inverse":"#FFFFFF"},"fonts":{"title":"Aptos","body":"Aptos"}},"slides":[{"layout":"title","title":"代表页标题","subtitle":"可选"}]}；theme 字段和值必须完整，slides 给出 2 至 3 张可真实渲染的代表页，每页仅保留所选版式需要的字段。'
+    if render_type == "presentation":
+        return '只输出合法 JSON：{"title":"标题","slides":[{"layout":"title|section|bullets|two_column|chart|table|conclusion","title":"页标题","subtitle":"可选","bullets":["要点"],"left":[],"right":[],"headers":[],"rows":[],"categories":[],"series":[{"name":"系列","values":[1]}]}]}；仅保留所选版式需要的字段。'
     return "输出可直接渲染的 Markdown 正文。"
+
+
+def _approved_presentation_stage(
+    run: dict[str, Any], output_format: str, label: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    node = next(
+        (
+            item
+            for item in run.get("plan", {}).get("nodes") or []
+            if (item.get("parameters") or {}).get("output_format") == output_format
+        ),
+        None,
+    )
+    if not node:
+        raise RuntimeError(f"presentation {label} gate is missing")
+    node_id = str(node.get("id") or "")
+    state = (run.get("nodes") or {}).get(node_id) or {}
+    binding = (run.get("approved_gate_artifacts") or {}).get(node_id) or {}
+    output = str(state.get("output") or "")
+    if (node_id not in set(run.get("approved_gates") or [])
+            or int(binding.get("artifact_version") or 0) != int(state.get("attempt") or 0)
+            or hashlib.sha256(output.encode()).hexdigest() != binding.get("content_hash")):
+        raise RuntimeError(f"approved presentation {label} is missing, stale, or tampered")
+    return _extract_json_object(output), dict(binding)
+
+
+def _approved_presentation_design(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    value, binding = _approved_presentation_stage(run, "presentation_design", "design")
+    from backend.services.presentation_scenario import validate_theme
+    theme = validate_theme(value.get("theme"))
+    return theme, binding
+
+
+def _approved_presentation_outline(run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    return _approved_presentation_stage(run, "presentation_outline", "outline")
+
+
+def _assert_final_matches_approved_outline(
+    final: dict[str, Any], outline: dict[str, Any]
+) -> None:
+    final_slides = final.get("slides")
+    outline_slides = outline.get("slides")
+    if not isinstance(final_slides, list) or not isinstance(outline_slides, list):
+        raise RuntimeError("final presentation or approved outline has invalid slides")
+    final_shape = [
+        (str(item.get("layout") or ""), str(item.get("title") or "").strip())
+        for item in final_slides
+        if isinstance(item, dict)
+    ]
+    outline_shape = [
+        (str(item.get("layout") or ""), str(item.get("title") or "").strip())
+        for item in outline_slides
+        if isinstance(item, dict)
+    ]
+    if final_shape != outline_shape:
+        raise RuntimeError("final presentation differs from approved outline structure")
+
+
+def _bind_approved_presentation_design(run: dict[str, Any], content: str) -> tuple[str, dict[str, Any]]:
+    value = _extract_json_object(content)
+    theme, binding = _approved_presentation_design(run)
+    value["theme"] = theme
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")), binding
+
+
+def _bind_approved_presentation_inputs(
+    run: dict[str, Any], content: str
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    value = _extract_json_object(content)
+    theme, design_binding = _approved_presentation_design(run)
+    outline, outline_binding = _approved_presentation_outline(run)
+    _assert_final_matches_approved_outline(value, outline)
+    value["theme"] = theme
+    return (
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        design_binding,
+        outline_binding,
+    )
 
 
 def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
     params = node.get("parameters") or {}
     artifact_contract = _workflow_artifact_contract(node)
+    presentation_output = str(params.get("output_format") or "").startswith("presentation")
     completed = []
     current_id = str(node.get("id") or "")
     dependency_ids = {
@@ -2893,14 +3006,17 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
             continue
         state = (run.get("nodes") or {}).get(node_id) or {}
         if state.get("status") == "succeeded" and state.get("output"):
-            completed.append(
-                f"- {candidate.get('name') or node_id}: {str(state['output'])[:1800]}"
-            )
+            upstream_limit = 5000 if str((node.get("parameters") or {}).get("output_format") or "").startswith("presentation") else 1800
+            output = str(state["output"])
+            if presentation_output:
+                if len(output) > upstream_limit:
+                    raise RuntimeError(f"上游成果 {node_id} 超过 {upstream_limit} 字符；禁止静默截断")
+            completed.append(f"- {candidate.get('name') or node_id}: {output[:upstream_limit]}")
     node_type = str(node.get("node_type") or "")
     node_budget = max(
         256, int((node.get("parameters") or {}).get("max_tokens") or 2048)
     )
-    output_char_limit = max(600, min(2200, node_budget // 2))
+    output_char_limit = max(600, min(8000 if presentation_output else 2200, node_budget // 2))
     tool_rule = (
         "直接使用当前节点已授权的 web_search/web_extract 或文件检索工具，"
         "按最小次数完成检索；不得把工具切换标签、调用计划或‘我先检查工具’作为最终成果。"
@@ -2908,6 +3024,12 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         else "本节点禁止调用工具；只基于当前 Session 已有的上游成果完成转换、分析或格式化。"
     )
     upstream = chr(10).join(completed) if completed else "无直接依赖或上游暂无成果"
+    source = run.get("source_document") or {}
+    source_text = str(source.get("text") or "")
+    if source_text and current_id == "presentation_outline":
+        if len(source_text) > 8_000:
+            raise RuntimeError("私有源文档超过 8000 字符；当前演示工作流禁止静默截断")
+        upstream += f"\n\n私有源文档（{source.get('filename', 'document')}，共 {len(source_text)} 字符）：\n{source_text}"
     agent_config = run.get("agent_config") or {}
     composition = agent_config.get("composition") or {}
     allowed_agents = set(composition.get("capability_agent_ids") or []) | set(
@@ -2924,7 +3046,7 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         f"子 Agent 并发上限={delegation.get('max_concurrent_children', 0)}；"
         f"委派深度上限={delegation.get('max_spawn_depth', 0)}"
     )
-    return (
+    prompt = (
         "你是 Hermes 工作流编排引擎，正在同一个持久 Session 中推进已获用户批准的 DAG。\n"
         f"任务专用 Agent 指令：{task_directive or '使用平台基线约束'}\n"
         f"批准的运行边界：{task_boundaries}\n"
@@ -2942,7 +3064,10 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         "严格遵守当前节点的 Agent、知识范围与工具授权；引用真实来源，不得虚构。"
         "只输出当前节点可落盘的完整成果，不要输出运行状态说明。\n"
         f"上游上下文：\n{upstream}"
-    )[:MAX_INPUT]
+    )
+    if presentation_output and len(prompt) > MAX_INPUT:
+        raise RuntimeError(f"演示工作流输入为 {len(prompt)} 字符，超过 {MAX_INPUT} 字符上限；禁止静默截断")
+    return prompt[:MAX_INPUT]
 
 
 def _workflow_output_incomplete(node: dict[str, Any], reply: str) -> bool:
@@ -3112,6 +3237,13 @@ def _workflow_run_sync(execution_id: str) -> None:
                         )
             if _workflow_output_incomplete(node, reply):
                 raise RuntimeError("Hermes 未完成当前节点的实际工具执行")
+            contract = _workflow_artifact_contract(node)
+            approved_design = None
+            approved_outline = None
+            if contract["render_type"] == "presentation":
+                reply, approved_design, approved_outline = _bind_approved_presentation_inputs(run, reply)
+            elif contract["render_type"].startswith("presentation"):
+                reply = json.dumps(_extract_json_object(reply), ensure_ascii=False, separators=(",", ":"))
             with _workflow_runs_lock:
                 run["hermes_session_id"] = hermes_sid
                 state.update({"status": "succeeded", "output": reply, "usage": node_usage})
@@ -3121,7 +3253,8 @@ def _workflow_run_sync(execution_id: str) -> None:
                     else "source" if node.get("node_type") == "KNOWLEDGE_RETRIEVAL"
                     else "draft"
                 )
-                artifact_contract = _workflow_artifact_contract(node)
+                artifact_contract = contract
+                approval_gate = str((node.get("parameters") or {}).get("approval_gate") or "")
                 _workflow_event(
                     run,
                     "node_succeeded",
@@ -3139,9 +3272,17 @@ def _workflow_run_sync(execution_id: str) -> None:
                         "content": reply,
                         "source_kind": "hermes_output",
                         **artifact_contract,
+                        "approval_gate": approval_gate or None,
+                        "artifact_version": state["attempt"],
+                        "approved_design": approved_design,
+                        "approved_outline": approved_outline,
                     },
                     message=f"完成：{node.get('name') or node_id}",
                 )
+                if approval_gate and node_id not in set(run.get("approved_gates") or []):
+                    run["status"] = "awaiting_approval"
+                    _workflow_event(run, "run_awaiting_approval", node_id=node_id, approval_gate=approval_gate, artifact_version=state["attempt"], message=f"等待确认：{node.get('name') or node_id}")
+                    return
                 if int(run["usage"].get("budget_tokens") or 0) > int(run.get("max_tokens") or 0):
                     raise RuntimeError(
                         "Hermes 工作流 Token 预算已耗尽"
@@ -7412,6 +7553,8 @@ async def start_workflow_run(
                 "usage": {},
                 "cancel_requested": False,
                 "hermes_session_id": None,
+                "approved_gates": [],
+                "approved_gate_artifacts": {},
             }
         )
         _workflow_runs[body.execution_id] = run
@@ -7491,12 +7634,44 @@ async def retry_workflow_run(
         start = order.index(target)
         for node_id in order[start:]:
             run["nodes"][node_id] = {"status": "pending", "attempt": run["nodes"].get(node_id, {}).get("attempt", 0)}
+        run["approved_gates"] = [node_id for node_id in (run.get("approved_gates") or []) if node_id not in set(order[start:])]
+        run["approved_gate_artifacts"] = {node_id: value for node_id, value in (run.get("approved_gate_artifacts") or {}).items() if node_id not in set(order[start:])}
         run["status"] = "queued"
         run["error"] = None
         run["cancel_requested"] = False
         _workflow_event(run, "retry_queued", node_id=target, message="失败节点已重新入队")
         _start_workflow_thread(execution_id)
         return {"ok": True, "status": "queued", "from_node_id": target}
+
+
+@app.post("/v1/workflow-runs/{execution_id}/approve-gate")
+async def approve_workflow_gate(execution_id: str, body: WorkflowGateApprovalRequest, x_hermes_internal_token: str | None = Header(None)):
+    _require_internal(x_hermes_internal_token)
+    with _workflow_runs_lock:
+        run = _workflow_runs.get(execution_id)
+        if not run or run.get("status") != "awaiting_approval":
+            raise HTTPException(status_code=409, detail="workflow is not awaiting approval")
+        state = (run.get("nodes") or {}).get(body.node_id) or {}
+        node = next((item for item in run["plan"].get("nodes") or [] if item.get("id") == body.node_id), None)
+        if not node or not (node.get("parameters") or {}).get("approval_gate") or state.get("status") != "succeeded" or int(state.get("attempt") or 0) != body.artifact_version:
+            raise HTTPException(status_code=409, detail="stale gate approval")
+        output = str(state.get("output") or "")
+        if hashlib.sha256(output.encode()).hexdigest() != body.expected_hash:
+            raise HTTPException(status_code=409, detail="approved artifact hash mismatch")
+        if (node.get("parameters") or {}).get("output_format") == "presentation_design":
+            from backend.services.presentation_scenario import validate_theme
+            try:
+                validate_theme(_extract_json_object(output).get("theme"))
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        approved = set(run.get("approved_gates") or [])
+        approved.add(body.node_id)
+        run["approved_gates"] = sorted(approved)
+        run.setdefault("approved_gate_artifacts", {})[body.node_id] = {"artifact_id": body.artifact_id, "content_hash": body.expected_hash, "artifact_version": body.artifact_version}
+        run["status"] = "queued"
+        _workflow_event(run, "gate_approved", node_id=body.node_id, artifact_version=body.artifact_version, message="业务阶段已确认")
+        _start_workflow_thread(execution_id)
+        return {"ok": True, "status": "queued"}
 
 
 @app.get("/v1/skills")

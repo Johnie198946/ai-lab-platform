@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import PDFKit
 
 // MARK: - 工作流主页
 
@@ -601,7 +602,7 @@ public final class WorkflowActivityCoordinator: ObservableObject {
         executions.values.compactMap { execution in
             guard !dismissedWorkflowIds.contains(execution.workflowId),
                   let workflow = executionWorkflows[execution.workflowId],
-                  ["queued", "running", "awaiting_review", "failed"].contains(execution.status)
+                  ["queued", "running", "awaiting_approval", "awaiting_review", "failed"].contains(execution.status)
             else { return nil }
             return ExecutionActivity(workflow: workflow, execution: execution)
         }
@@ -634,7 +635,7 @@ public final class WorkflowActivityCoordinator: ObservableObject {
         executionWorkflows[workflow.id] = workflow
         if executions[execution.id] != execution { executions[execution.id] = execution }
         if dismissedWorkflowIds.contains(workflow.id) { dismissedWorkflowIds.remove(workflow.id) }
-        guard !["awaiting_review", "completed", "failed", "cancelled"].contains(execution.status),
+        guard !["awaiting_approval", "awaiting_review", "completed", "failed", "cancelled"].contains(execution.status),
               executionTasks[execution.id] == nil else { return }
         executionTasks[execution.id] = Task { [weak self] in
             guard let self else { return }
@@ -643,7 +644,7 @@ public final class WorkflowActivityCoordinator: ObservableObject {
                 do {
                     let snapshot = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
                     if self.executions[snapshot.id] != snapshot { self.executions[snapshot.id] = snapshot }
-                    if ["awaiting_review", "completed", "failed", "cancelled"].contains(snapshot.status) { return }
+                    if ["awaiting_approval", "awaiting_review", "completed", "failed", "cancelled"].contains(snapshot.status) { return }
                 } catch {
                     // The cloud run is authoritative; foreground/bootstrap will retry.
                 }
@@ -1573,6 +1574,10 @@ private struct WorkflowExecutionView: View {
     @State private var isWorking = false
     @State private var executionEvents: [WorkflowEventDTO] = []
     @State private var lastExecutionEventId = 0
+    @State private var feedback = ""
+    @State private var slideNumber = 1
+
+    private var isPresentation: Bool { workflow.desiredOutput.lowercased().contains("pptx") }
 
     init(workflow: WorkflowDTO, initialExecution: WorkflowExecutionDTO) {
         self.workflow = workflow
@@ -1589,7 +1594,7 @@ private struct WorkflowExecutionView: View {
                     initiallyExpanded: ["queued", "running"].contains(execution.status)
                 )
                 nodeProgress
-                if execution.status == "awaiting_review" || execution.status == "completed" {
+                if ["awaiting_approval", "awaiting_review", "completed"].contains(execution.status) {
                     artifactReview
                 }
                 if let errorMessage { WorkflowErrorBanner(message: errorMessage) }
@@ -1727,20 +1732,20 @@ private struct WorkflowExecutionView: View {
 
     private var artifactReview: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            Text("成果与入库素材").font(AppTheme.Typography.sectionTitle)
-            Text("所有内容已保存到工作流档案。勾选后批准，才会进入正式知识库。")
+            Text(isPresentation ? "演示文稿成果" : "成果与入库素材").font(AppTheme.Typography.sectionTitle)
+            Text(isPresentation ? "大纲与代表页设计需逐轮确认；最终确认仅完成交付，不会发布到平台知识库。" : "所有内容已保存到工作流档案。勾选后批准，才会进入正式知识库。")
                 .font(AppTheme.Typography.supporting)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
             ForEach(artifacts) { artifact in
                 HStack(spacing: AppTheme.Spacing.md) {
-                    Button {
+                    if !isPresentation { Button {
                         if selectedArtifacts.contains(artifact.id) { selectedArtifacts.remove(artifact.id) }
                         else { selectedArtifacts.insert(artifact.id) }
                     } label: {
                         Image(systemName: selectedArtifacts.contains(artifact.id) ? "checkmark.square.fill" : "square")
                             .foregroundStyle(AppTheme.Colors.quantumBlue)
                             .frame(width: 44, height: 44)
-                    }
+                    } }
                     Button {
                         selectedArtifact = artifact
                     } label: {
@@ -1757,6 +1762,12 @@ private struct WorkflowExecutionView: View {
                 .background(AppTheme.Colors.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
             }
+            if isPresentation && ["awaiting_approval", "awaiting_review"].contains(execution.status) {
+                TextField("填写整体修改意见（退回时必填）", text: $feedback, axis: .vertical).textFieldStyle(.roundedBorder)
+                if execution.status == "awaiting_review" {
+                    Stepper("逐页反馈：第 \(slideNumber) 页", value: $slideNumber, in: 1...60)
+                }
+            }
         }
     }
 
@@ -1771,6 +1782,12 @@ private struct WorkflowExecutionView: View {
                 Button("从失败处重试", systemImage: "arrow.clockwise") { retry() }
                     .buttonStyle(.borderedProminent)
                     .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
+            } else if execution.status == "awaiting_approval" && isPresentation {
+                Button("退回修改") { reviewPresentation(decision: "revise") }.buttonStyle(.bordered)
+                Button("确认本阶段") { reviewPresentation(decision: "approve") }.buttonStyle(.borderedProminent)
+            } else if execution.status == "awaiting_review" && isPresentation {
+                Button("退回指定页") { reviewPresentation(decision: "revise", perSlide: true) }.buttonStyle(.bordered)
+                Button("确认并完成") { reviewPresentation(decision: "approve") }.buttonStyle(.borderedProminent)
             } else if execution.status == "awaiting_review" {
                 Button("退回修改") { requestRevision() }
                     .buttonStyle(.bordered)
@@ -1794,7 +1811,7 @@ private struct WorkflowExecutionView: View {
     private func monitor() async {
         do {
             execution = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
-            if !["awaiting_review", "completed", "failed", "cancelled"].contains(execution.status) {
+            if !["awaiting_approval", "awaiting_review", "completed", "failed", "cancelled"].contains(execution.status) {
                 for try await event in APIClient.shared.workflowEventStream(
                     executionId: execution.id,
                     after: lastExecutionEventId
@@ -1812,7 +1829,7 @@ private struct WorkflowExecutionView: View {
         while !Task.isCancelled {
             do {
                 execution = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
-                if ["awaiting_review", "completed"].contains(execution.status) {
+                if ["awaiting_approval", "awaiting_review", "completed"].contains(execution.status) {
                     artifacts = try await APIClient.shared.fetchWorkflowArtifacts(executionId: execution.id)
                     if selectedArtifacts.isEmpty {
                         selectedArtifacts = Set(artifacts.filter(\.selectedForPublish).map(\.id))
@@ -1846,6 +1863,17 @@ private struct WorkflowExecutionView: View {
             execution = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
         }
     }
+    private func reviewPresentation(decision: String, perSlide: Bool = false) {
+        guard let artifact = artifacts.last(where: { item in
+            if execution.status == "awaiting_approval" { return item.metadata.approvalGate != nil }
+            return item.extension == "pptx"
+        }) else { errorMessage = "待确认成果尚未同步"; return }
+        if decision == "revise" && feedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { errorMessage = "请填写修改意见"; return }
+        perform {
+            execution = try await APIClient.shared.reviewPresentationStage(executionId: execution.id, artifact: artifact, decision: decision, comment: feedback, slideNumber: perSlide ? slideNumber : nil)
+            feedback = ""; await monitor()
+        }
+    }
     private func perform(_ operation: @escaping () async throws -> Void) {
         isWorking = true
         Task {
@@ -1877,12 +1905,18 @@ private struct WorkflowArtifactPreview: View {
     let artifact: WorkflowArtifactDTO
     @State private var content: String?
     @State private var errorMessage: String?
+    @State private var pdfDocument: PDFDocument?
+    @State private var currentPage = 1
+    @State private var downloadURL: URL?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                if let content {
+                if let pdfDocument {
+                    Text("第 \(currentPage) / \(pdfDocument.pageCount) 页").font(AppTheme.Typography.supporting)
+                    PDFDeckView(document: pdfDocument, currentPage: $currentPage).frame(minHeight: 620)
+                } else if let content {
                     Text(content)
                         .font(.body)
                         .textSelection(.enabled)
@@ -1897,14 +1931,51 @@ private struct WorkflowArtifactPreview: View {
             .navigationTitle(artifact.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("完成") { dismiss() } }
+            .safeAreaInset(edge: .bottom) {
+                if let downloadURL { ShareLink(item: downloadURL) { Label("下载可编辑 \(artifact.extension.uppercased()) / 存储到文件 / 分享", systemImage: "square.and.arrow.up") }.buttonStyle(.borderedProminent).padding() }
+            }
             .task {
                 do {
-                    content = try await APIClient.shared.fetchWorkflowArtifactContent(
-                        executionId: executionId, artifactId: artifact.id
-                    ).content
+                    if artifact.extension == "pptx" {
+                        let deck = try await APIClient.shared.downloadAuthenticated(path: "workflow-executions/\(executionId)/artifacts/\(artifact.id)/download", expectedHash: artifact.contentHash)
+                        downloadURL = try InboxFileManager.shared.storePrivateFile(deck, sourceId: artifact.id, revision: artifact.metadata.artifactVersion ?? 1, filename: "\(artifact.title).pptx")
+                        guard let previewId = artifact.metadata.previewArtifactId, let previewHash = artifact.metadata.previewContentHash else { throw APIError.network(artifact.metadata.previewError ?? "PPTX 已生成，但渲染预览不可用") }
+                        let pdf = try await APIClient.shared.downloadAuthenticated(path: "workflow-executions/\(executionId)/artifacts/\(previewId)/download", expectedHash: previewHash)
+                        guard let document = PDFDocument(data: pdf) else { throw APIError.decoding("渲染预览不是有效 PDF") }; pdfDocument = document
+                    } else if let previewId = artifact.metadata.previewArtifactId, let previewHash = artifact.metadata.previewContentHash {
+                        let pdf = try await APIClient.shared.downloadAuthenticated(path: "workflow-executions/\(executionId)/artifacts/\(previewId)/download", expectedHash: previewHash)
+                        guard let document = PDFDocument(data: pdf) else { throw APIError.decoding("设计样稿预览不是有效 PDF") }; pdfDocument = document
+                    } else if artifact.extension == "pdf" {
+                        let pdf = try await APIClient.shared.downloadAuthenticated(path: "workflow-executions/\(executionId)/artifacts/\(artifact.id)/download", expectedHash: artifact.contentHash)
+                        guard let document = PDFDocument(data: pdf) else { throw APIError.decoding("预览不是有效 PDF") }; pdfDocument = document
+                    } else {
+                        content = try await APIClient.shared.fetchWorkflowArtifactContent(executionId: executionId, artifactId: artifact.id).content
+                    }
                 } catch { errorMessage = error.localizedDescription }
             }
         }
+        .preferredColorScheme(.light)
+    }
+}
+
+private struct PDFDeckView: UIViewRepresentable {
+    let document: PDFDocument
+    @Binding var currentPage: Int
+    func makeCoordinator() -> Coordinator { Coordinator(currentPage: $currentPage) }
+    func makeUIView(context: Context) -> UIStackView {
+        let pdf = PDFView(); pdf.document = document; pdf.autoScales = true; pdf.displayMode = .singlePageContinuous; pdf.displayDirection = .vertical
+        let thumbnails = PDFThumbnailView(); thumbnails.pdfView = pdf; thumbnails.thumbnailSize = CGSize(width: 72, height: 96); thumbnails.layoutMode = .vertical
+        let stack = UIStackView(arrangedSubviews: [thumbnails, pdf]); stack.axis = .horizontal; thumbnails.widthAnchor.constraint(equalToConstant: 88).isActive = true
+        context.coordinator.pdfView = pdf
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.pageChanged), name: .PDFViewPageChanged, object: pdf)
+        return stack
+    }
+    func updateUIView(_ view: UIStackView, context: Context) {}
+    final class Coordinator: NSObject {
+        weak var pdfView: PDFView?; var currentPage: Binding<Int>
+        init(currentPage: Binding<Int>) { self.currentPage = currentPage }
+        @objc func pageChanged() { guard let pdf = pdfView, let page = pdf.currentPage else { return }; currentPage.wrappedValue = (pdf.document?.index(for: page) ?? 0) + 1 }
+        deinit { NotificationCenter.default.removeObserver(self) }
     }
 }
 
@@ -1948,7 +2019,7 @@ private extension String {
         case "clarifying": return "需求澄清中"
         case "planning": return "生成计划中"
         case "needs_attention": return "规划需处理"
-        case "awaiting_approval": return "待确认计划"
+        case "awaiting_approval": return "待人工确认"
         case "building_agent": return "构建 Agent 中"
         case "agent_ready": return "Agent 待启动"
         case "ready": return "已就绪"

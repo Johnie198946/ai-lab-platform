@@ -437,5 +437,4 @@ public struct DevModeBanner: View {
 #Preview("MainTabView - Dark") {
     MainTabView()
         .environmentObject(AppState())
-        .preferredColorScheme(.dark)
 }
