@@ -1061,5 +1061,4 @@ private struct PearlLoginArtwork: View {
 #Preview("LoginView - Dark Mode") {
     LoginView()
         .environmentObject(AppState(isLoggedIn: false))
-        .preferredColorScheme(.dark)
 }

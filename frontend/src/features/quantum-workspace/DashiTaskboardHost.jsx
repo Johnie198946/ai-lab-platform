@@ -20,9 +20,7 @@ const batchAutoInstruction = (task) => isReviewTask(task)
 
 
 function resolveDashiTheme() {
-  const explicitTheme = document.documentElement.dataset.theme;
-  if (explicitTheme === "light" || explicitTheme === "dark") return explicitTheme;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light";
 }
 
 function addTaskboardUserHeaders(headers, user) {
@@ -311,11 +309,6 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
     const postTheme = () => {
       iframeRef.current?.contentWindow?.postMessage({ type: "taskboard:theme", theme: resolveDashiTheme() }, window.location.origin);
     };
-    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
-    const handleThemeChange = () => postTheme();
-    mediaQuery?.addEventListener?.("change", handleThemeChange);
-    const themeObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(handleThemeChange);
-    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     const receive = async (event) => {
       if (event.source !== iframeRef.current?.contentWindow || !event.data?.type) return;
       const frame = iframeRef.current.contentWindow;
@@ -558,8 +551,6 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
     window.addEventListener("message", receive);
     return () => {
       window.removeEventListener("message", receive);
-      mediaQuery?.removeEventListener?.("change", handleThemeChange);
-      themeObserver?.disconnect();
     };
   }, [dashiProjectId, ensureTaskboardSession, loadTaskSession, onOpenTaskChat, onRevisionChange, openArchitect, project, user]);
 

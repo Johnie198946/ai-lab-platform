@@ -139,6 +139,44 @@ async def reserve_inference(
             return row
 
 
+async def monthly_quota_snapshot(auth_payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the same calendar-month ledger used by quota enforcement."""
+    now = datetime.now(timezone.utc)
+    period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period_start.month == 12:
+        period_end = period_start.replace(year=period_start.year + 1, month=1)
+    else:
+        period_end = period_start.replace(month=period_start.month + 1)
+    limit = max(int(os.environ.get("QUANTUM_MONTHLY_TOKEN_LIMIT", "250000")), 1)
+    counted = case(
+        (InferenceReservation.state == "settled", func.coalesce(
+            InferenceReservation.actual_tokens,
+            InferenceReservation.reserved_tokens,
+        )),
+        else_=InferenceReservation.reserved_tokens,
+    )
+    async with SessionLocal() as db:
+        used = int(await db.scalar(
+            select(func.coalesce(func.sum(counted), 0)).where(
+                InferenceReservation.user_id == usage_user_id(auth_payload),
+                InferenceReservation.state.in_(_OPEN_STATES),
+                InferenceReservation.created_at >= period_start,
+                InferenceReservation.created_at < period_end,
+            )
+        ) or 0)
+    remaining = max(limit - used, 0)
+    return {
+        "limit_tokens": limit,
+        "used_tokens": used,
+        "remaining_tokens": remaining,
+        "percent_used": min((used / limit) * 100, 100),
+        "is_exhausted": remaining == 0,
+        "period_kind": "calendar_month",
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+    }
+
+
 async def settle_inference(
     auth_payload: dict[str, Any], request_id: str, usage: dict[str, Any] | None,
 ) -> str:

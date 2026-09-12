@@ -139,5 +139,4 @@ public struct ProfileEditSheet: View {
     ProfileEditSheet()
         .environmentObject(AppState())
         .environmentObject(APIClient.shared)
-        .preferredColorScheme(.dark)
 }

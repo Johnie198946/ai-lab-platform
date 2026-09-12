@@ -3210,14 +3210,61 @@ public final class TenantSessionCoordinator: ObservableObject {
         let name = url.lastPathComponent
         let sizeBytes = InboxFileManager.shared.fileSizeBytes(at: url) ?? 0
         let sizeText = ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
-        let attachment = AttachmentBlock(fileName: name, fileType: attachmentFileType(for: url), fileSize: sizeText)
+        let attachment = AttachmentBlock(fileName: name, fileType: attachmentFileType(for: url), fileSize: sizeText, state: .uploading, statusMessage: "正在上传原件")
         let msg = ChatMessage(
             role: .user,
-            content: "📄 已导入文档：\(name)（\(sizeText)）",
+            content: "📄 正在上传文档：\(name)（\(sizeText)）",
             blocks: [.attachment(attachment)]
         )
         messages.append(msg)
-        dispatchAssistantReply(to: "文档导入")
+        commitSession()
+        Task {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                guard sizeBytes <= InboxFileManager.maxFileSizeBytes else { throw APIError.network("文档超过 25 MB 上限") }
+                let ext = url.pathExtension.lowercased()
+                guard ["pdf", "docx"].contains(ext) else { throw APIError.network("仅支持 PDF 或 DOCX；旧版 .doc 暂不支持") }
+                let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                let mime = ext == "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                let receipt = try await APIClient.shared.uploadDocument(data: data, filename: name, contentType: mime)
+                updateAttachment(messageId: msg.id, attachmentId: attachment.id, receipt: receipt)
+                guard receipt.status == "ready" else { return }
+                do {
+                    let workflow = try await APIClient.shared.createWorkflow(
+                        title: "\(name) 演示文稿",
+                        description: "将已上传私有文档《\(name)》转换为结构清晰、可编辑且可逐页修订的演示文稿。先确认大纲，再确认代表页设计，最后生成完整 PPTX。",
+                        desiredOutput: "可编辑 PPTX 与同源渲染预览",
+                        sourceDocumentId: receipt.sourceId
+                    )
+                    messages.append(ChatMessage(role: .assistant, content: "原件已安全保存并完成文本提取（未编译为知识）。文档转演示工作流已创建（\(workflow.workflow.id)），请在工作流中确认需求、大纲和代表页设计。"))
+                    appState?.pendingWorkflowId = workflow.workflow.id
+                    commitSession()
+                } catch {
+                    updateAttachmentFailure(messageId: msg.id, attachmentId: attachment.id, message: "原件已保存，但演示工作流未创建：\(error.localizedDescription)", state: .ready)
+                }
+            } catch {
+                updateAttachmentFailure(messageId: msg.id, attachmentId: attachment.id, message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func updateAttachment(messageId: String, attachmentId: String, receipt: DocumentReceiptDTO) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
+              let blockIndex = messages[messageIndex].blocks.firstIndex(where: { if case .attachment(let item) = $0 { return item.id == attachmentId }; return false }),
+              case .attachment(var item) = messages[messageIndex].blocks[blockIndex] else { return }
+        item.state = receipt.status == "ready" ? .ready : .parseFailed
+        item.sourceId = receipt.sourceId; item.sourceRevision = receipt.sourceRevision; item.contentHash = receipt.contentHash
+        item.statusMessage = receipt.status == "ready" ? "原件已保存 · 文本已提取" : (receipt.parseError?.message ?? "原件已保存 · 文本提取失败")
+        messages[messageIndex].blocks[blockIndex] = .attachment(item); commitSession()
+    }
+
+    private func updateAttachmentFailure(messageId: String, attachmentId: String, message: String, state: AttachmentTransferState = .failed) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
+              let blockIndex = messages[messageIndex].blocks.firstIndex(where: { if case .attachment(let item) = $0 { return item.id == attachmentId }; return false }),
+              case .attachment(var item) = messages[messageIndex].blocks[blockIndex] else { return }
+        item.state = state; item.statusMessage = message
+        messages[messageIndex].blocks[blockIndex] = .attachment(item); commitSession(); showToast(message)
     }
 
     public func importWeChatLink(_ link: String) {

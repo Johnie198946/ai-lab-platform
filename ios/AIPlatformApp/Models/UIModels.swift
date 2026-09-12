@@ -172,7 +172,7 @@ public struct TableBlock: Identifiable, Sendable, Hashable {
 }
 
 /// 附件文件类型（对应文档图标）
-public enum AttachmentFileType: String, Sendable, Hashable {
+public enum AttachmentFileType: String, Codable, Sendable, Hashable {
     case word
     case pdf
     case ppt
@@ -180,17 +180,29 @@ public enum AttachmentFileType: String, Sendable, Hashable {
     case generic
 }
 
-public struct AttachmentBlock: Identifiable, Sendable, Hashable {
+public enum AttachmentTransferState: String, Codable, Sendable, Hashable { case uploading, ready, parseFailed, failed }
+
+public struct AttachmentBlock: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public var fileName: String
     public var fileType: AttachmentFileType
     public var fileSize: String
+    public var state: AttachmentTransferState?
+    public var sourceId: String?
+    public var contentHash: String?
+    public var sourceRevision: Int?
+    public var statusMessage: String?
 
-    public init(id: String = UUID().uuidString, fileName: String, fileType: AttachmentFileType, fileSize: String) {
+    public init(id: String = UUID().uuidString, fileName: String, fileType: AttachmentFileType, fileSize: String, state: AttachmentTransferState = .ready, sourceId: String? = nil, contentHash: String? = nil, sourceRevision: Int? = nil, statusMessage: String? = nil) {
         self.id = id
         self.fileName = fileName
         self.fileType = fileType
         self.fileSize = fileSize
+        self.state = state
+        self.sourceId = sourceId
+        self.contentHash = contentHash
+        self.sourceRevision = sourceRevision
+        self.statusMessage = statusMessage
     }
 }
 
@@ -677,6 +689,7 @@ public struct PersistedMessage: Codable, Sendable {
     public let clarify: PersistedClarify?
     public let noteDraft: NoteDraftBlock?
     public let knowledgeAction: KnowledgeActionBlock?
+    public let attachments: [AttachmentBlock]?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -710,6 +723,7 @@ public struct PersistedMessage: Codable, Sendable {
             if case .knowledgeAction(let action) = $0 { return action }
             return nil
         }.first
+        self.attachments = m.blocks.compactMap { if case .attachment(let item) = $0 { return item }; return nil }
     }
 
     public func toChatMessage(sessionId: String) -> ChatMessage {
@@ -746,6 +760,7 @@ public struct PersistedMessage: Codable, Sendable {
         if let knowledgeAction {
             message.blocks.append(.knowledgeAction(knowledgeAction))
         }
+        for attachment in attachments ?? [] { message.blocks.append(.attachment(attachment)) }
         return message
     }
 }
@@ -2320,6 +2335,7 @@ public final class AppState: ObservableObject {
         SessionManager.shared.activateAccount(
             tenantKey: currentTenantKey, userId: currentUserId
         )
+        InboxFileManager.shared.activatePrivateCache(tenantKey: currentTenantKey, userId: currentUserId)
         if notify {
             NotificationCenter.default.post(name: .localAccountDidChange, object: nil)
         }
@@ -2342,6 +2358,7 @@ public final class AppState: ObservableObject {
     }
     
     public func logout() {
+        InboxFileManager.shared.clearPrivateCache()
         self.isLoggedIn = false
         self.isGuestMode = false
         self.chatSessionId = nil

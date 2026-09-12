@@ -10,7 +10,6 @@ import SwiftUI
 
 public struct TopologyCanvasView: View {
     @EnvironmentObject private var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
     
     @State private var graph: TopologyGraph = TopologyGraph()
     @State private var selectedNode: AgentNode? = nil
@@ -295,7 +294,7 @@ public struct TopologyCanvasView: View {
             
             context.stroke(
                 path,
-                with: .color(colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.04)),
+                with: .color(Color.black.opacity(0.04)),
                 lineWidth: 1
             )
         }
@@ -413,7 +412,6 @@ public struct NodeCardView: View {
     public let node: AgentNode
     public let isSelected: Bool
     public var isEditing: Bool = false
-    @Environment(\.colorScheme) private var colorScheme
     
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -786,5 +784,4 @@ private struct WrappingHStack: View {
 #Preview("TopologyCanvasView - Dark") {
     TopologyCanvasView()
         .environmentObject(AppState())
-        .preferredColorScheme(.dark)
 }

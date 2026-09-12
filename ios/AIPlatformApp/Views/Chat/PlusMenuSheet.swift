@@ -4,7 +4,7 @@
 //
 //  对话页「+」号四入口扩展面板：
 //   1. 📸 照片图库（PhotosPicker，客户端 2048px 等比降采样 JPEG 0.85）
-//   2. 📄 文档文件（fileImporter，读取 Data 前 resourceValues(.fileSizeKey) 50MB 前置预检）
+//   2. 📄 文档文件（fileImporter，读取 Data 前 resourceValues(.fileSizeKey) 25 MB 前置预检）
 //   3. 💬 微信导入（WeChatLinkValidator 校验 mp.weixin.qq.com 白名单 + 非法 Toast）
 //   4. 🧠 引用知识（选取已订阅知识条目）
 //
@@ -75,7 +75,7 @@ public struct PlusMenuSheet: View {
             }
             .fileImporter(
                 isPresented: $isFileImporterPresented,
-                allowedContentTypes: [.item, .pdf, .image, .text, .data],
+                allowedContentTypes: [.pdf, UTType(filenameExtension: "docx")!],
                 allowsMultipleSelection: false,
                 onCompletion: handleDocumentImport
             )
@@ -110,7 +110,7 @@ public struct PlusMenuSheet: View {
             entryRow(
                 icon: "doc.fill",
                 title: "文档文件",
-                subtitle: "50MB 前置预检拦截",
+                subtitle: "25 MB 前置预检拦截",
                 tint: AppTheme.Colors.quantumBlue
             )
         }
@@ -327,11 +327,11 @@ public struct PlusMenuSheet: View {
             // 前置预检：读取 Data 前通过 resourceValues(.fileSizeKey) 拦截超限
             if let size = InboxFileManager.shared.fileSizeBytes(at: url),
                size > InboxFileManager.maxFileSizeBytes {
-                showToast("文件超过 50MB，已拦截", isError: true)
+                showToast("文件超过 25 MB，已拦截", isError: true)
                 return
             }
             onDocumentPicked(url)
-            showToast("文档已导入", isError: false)
+            showToast("正在安全上传文档", isError: false)
             dismiss()
         case .failure:
             showToast("文档读取失败", isError: true)
@@ -368,5 +368,4 @@ public struct PlusMenuSheet: View {
         onWeChatImported: { _ in },
         onKnowledgeReferenced: { _ in }
     )
-    .preferredColorScheme(.dark)
 }

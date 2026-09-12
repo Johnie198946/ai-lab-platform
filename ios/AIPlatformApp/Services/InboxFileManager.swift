@@ -16,8 +16,8 @@ public final class InboxFileManager {
 
     public static let shared = InboxFileManager()
 
-    /// 50MB 前置预检阈值（读取 Data 前拦截）
-    public static let maxFileSizeBytes: Int64 = 50 * 1024 * 1024
+    /// 与服务端上传契约一致的 25 MB 前置预检阈值。
+    public static let maxFileSizeBytes: Int64 = 25 * 1024 * 1024
 
     /// mtime 过期判定阈值（> 24h 删除）
     private let staleThreshold: TimeInterval = 24 * 60 * 60
@@ -26,8 +26,39 @@ public final class InboxFileManager {
     private let cleanupThrottleInterval: TimeInterval = 24 * 60 * 60
 
     private var lastCleanup: Date?
+    private var cacheScope = "inactive"
 
     private init() {}
+
+    public func activatePrivateCache(tenantKey: String, userId: String) {
+        cacheScope = Self.scope(tenantKey + "\0" + userId)
+        try? FileManager.default.createDirectory(at: privateCacheDirectory, withIntermediateDirectories: true)
+    }
+
+    public func clearPrivateCache() {
+        try? FileManager.default.removeItem(at: privateCacheDirectory)
+        cacheScope = "inactive"
+    }
+
+    public func storePrivateFile(_ data: Data, sourceId: String, revision: Int, filename: String) throws -> URL {
+        let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+        let safeExt = ["pdf", "docx", "pptx"].contains(ext) ? ext : "bin"
+        let url = privateCacheDirectory.appendingPathComponent("\(Self.scope(sourceId))-r\(revision).\(safeExt)")
+        try FileManager.default.createDirectory(at: privateCacheDirectory, withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        return url
+    }
+
+    private var privateCacheDirectory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PrivateDocuments", isDirectory: true)
+            .appendingPathComponent(cacheScope, isDirectory: true)
+    }
+
+    private static func scope(_ value: String) -> String {
+        // This is a path namespace, not an authentication primitive.
+        String(value.utf8.reduce(into: UInt64(1469598103934665603)) { $0 = ($0 ^ UInt64($1)) &* 1099511628211 }, radix: 16)
+    }
 
     // MARK: - 微信「OpenIn」接收目录
 

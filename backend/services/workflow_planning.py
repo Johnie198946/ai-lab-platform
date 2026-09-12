@@ -28,6 +28,7 @@ from backend.services.workflow_planner import (
 )
 from backend.services.llm_usage import build_llm_usage_record
 from backend.services.ipd_scenario_registry import is_registered_ipd_scenario
+from backend.services.presentation_scenario import is_presentation_workflow
 
 LEASE_SECONDS = 45
 POLL_SECONDS = 1.0
@@ -302,7 +303,7 @@ async def process_job(job_id: str, owner: str) -> None:
                 "revision_note": job.revision_note,
             }
 
-        if not HERMES_PLANNING_ENABLED or is_registered_ipd_scenario(workflow.description):
+        if not HERMES_PLANNING_ENABLED or is_registered_ipd_scenario(workflow.description) or is_presentation_workflow(workflow):
             async with SessionLocal() as db:
                 current_job = await db.get(WorkflowPlanningJob, job_id)
                 workflow = await db.get(WorkflowDefinition, current_job.workflow_id)

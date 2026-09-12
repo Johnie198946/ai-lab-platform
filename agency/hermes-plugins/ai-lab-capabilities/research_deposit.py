@@ -450,17 +450,26 @@ class ResearchDeposit:
         self.ctx.state.set(key, task if task is not None else record)
         return self.status(record)
 
+    def compilation_status(self, record):
+        from .writer_status import read_compilation
+        try:
+            return read_compilation(self.vault(), self.config()["pipeline_module"],
+                record["receipt"], record["source_revision"], record["scope"]["task_id"])
+        except Exception as exc:
+            return {"verified": False, "state": "unavailable", "reason": type(exc).__name__}
+
     def status(self, record):
         if "items" in record:
             items = [{"item_id": identity, **self.status(item)} for identity, item in record["items"].items()]
             valid = bool(items) and all(item["success"] for item in items)
             complete = bool(items) and all(item["complete"] for item in items)
-            stage = ("queued" if all(item["stage"] == "queued" for item in items) else "saved") if complete else "pending"
+            compiled = bool(items) and all(item.get("wiki_compiled") for item in items)
+            stage = "compiled" if compiled else ("queued" if any(item["stage"] in {"queued", "compiled"} for item in items) else "saved") if complete else "pending"
             # Preserve the single-item response shape for existing callers.
             result = dict(items[0]) if len(items) == 1 else {}
             result.update(success=valid, complete=complete, task_complete=complete,
                 stage=stage if len(items) != 1 else items[0]["stage"],
-                storage_scope=STORAGE_SCOPE, wiki_compiled=False,
+                storage_scope=STORAGE_SCOPE, wiki_compiled=compiled,
                 reason=record.get("reason") or (None if complete else "all_known_items_require_explicit_verified_receipts"),
                 items=items, total=len(items))
             if len(items) == 1 and items[0].get("reason"):
@@ -473,6 +482,15 @@ class ResearchDeposit:
         valid = self.verify_receipt(record) if record.get("receipt") else False
         stage = record.get("stage", "pending") if valid or not record.get("receipt") else "pending"
         complete = valid and record.get("explicit_receipt") is True
+        compilation = self.compilation_status(record) if valid else {"verified": False, "state": "not_verified"}
+        compiled = compilation.get("verified") is True
+        if compiled:
+            stage = "compiled"
+        trigger = dict(record.get("writer_trigger") or {}) if valid else None
+        if trigger is not None:
+            trigger["compile_verified"] = compiled
+            if compiled:
+                trigger["state"] = "compiled"
         return {"success": valid, "complete": complete, "stage": stage,
                 "storage_scope": STORAGE_SCOPE,
                 "source_revision": record.get("source_revision"),
@@ -481,8 +499,9 @@ class ResearchDeposit:
                 "admission_state": (record.get("receipt") or {}).get("admission_state"),
                 "reason": record.get("reason") or (None if complete else "missing_explicit_verified_receipt"),
                 "receipt": record.get("receipt") if valid else None,
-                "writer_trigger": record.get("writer_trigger") if valid else None,
-                "wiki_compiled": False}
+                "writer_trigger": trigger,
+                "compilation": compilation,
+                "wiki_compiled": compiled}
 
     def execute(self, inputs, **kw):
         try:
@@ -726,7 +745,8 @@ class ResearchDeposit:
                 # Explicit deposit/recover owns all persistence and compensation.
                 self.migrate(record)
                 result = self.status(record)
-                note = ("已保存并排队；尚未编译 Wiki。" if result["stage"] == "queued" else
+                note = ("已保存；唯一 Writer 消费与 Wiki 正文已核验。" if result.get("wiki_compiled") else
+                        "已保存并排队；尚未编译 Wiki。" if result["stage"] == "queued" else
                         "已保存为待审研究；未进 Wiki。" if result["stage"] == "saved" else "保存待恢复；未进 Wiki。")
                 if not result["complete"]:
                     note += " 缺显式受控交接回执，任务仍 pending。"

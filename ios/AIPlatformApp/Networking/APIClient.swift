@@ -144,6 +144,18 @@ public struct UsageSummaryDTO: Codable, Hashable {
     public let missingUsageCalls: Int
     public let daily: [UsageDailyDTO]
     public let models: [UsageModelDTO]
+    public let quota: TokenQuotaDTO?
+}
+
+public struct TokenQuotaDTO: Codable, Hashable {
+    public let limitTokens: Int
+    public let usedTokens: Int
+    public let remainingTokens: Int
+    public let percentUsed: Double
+    public let isExhausted: Bool
+    public let periodKind: String
+    public let periodStart: String
+    public let periodEnd: String
 }
 
 /// GET /api/v1/me/subscriptions 及订阅/退订返回
@@ -1547,7 +1559,38 @@ public struct WorkflowArtifactDTO: Codable, Identifiable, Hashable {
     public let sourceKind: String?
     public let selectedForPublish: Bool
     public let publishedPath: String?
+    public let `extension`: String
+    public let mimeType: String
+    public let metadata: WorkflowArtifactMetadataDTO
 }
+
+public struct WorkflowArtifactMetadataDTO: Codable, Hashable {
+    public let approvalGate: String?
+    public let artifactVersion: Int?
+    public let previewStatus: String?
+    public let previewArtifactId: String?
+    public let previewContentHash: String?
+    public let previewError: String?
+    public let parentArtifactId: String?
+    public let parentContentHash: String?
+    public let sampleArtifactId: String?
+    public let sampleContentHash: String?
+}
+
+public struct DocumentReceiptDTO: Codable, Hashable {
+    public let sourceId: String
+    public let sourceRevision: Int
+    public let filename: String
+    public let contentType: String
+    public let sizeBytes: Int64
+    public let contentHash: String
+    public let status: String
+    public let textAvailable: Bool
+    public let contributionStatus: String
+    public let parseError: DocumentParseErrorDTO?
+}
+
+public struct DocumentParseErrorDTO: Codable, Hashable { public let code: String; public let message: String }
 
 public struct WorkflowArtifactContentDTO: Codable {
     public let id: String
@@ -1598,10 +1641,12 @@ public struct WorkflowCreateRequestDTO: Encodable {
     public let title: String
     public let description: String
     public let desiredOutput: String
+    public let sourceDocumentId: String?
 
     enum CodingKeys: String, CodingKey {
         case title, description
         case desiredOutput = "desired_output"
+        case sourceDocumentId = "source_document_id"
     }
 }
 
@@ -1640,6 +1685,9 @@ public enum APIError: Error, LocalizedError {
         case .knowledgeScopeChanged:
             return "套餐或知识权限已变化，请刷新知识权限后重试"
         case .server(let code, let msg):
+            if code == 429 && msg.contains("inference_quota_exceeded") {
+                return "本月 Token 可用额度不足以启动本次请求，请在设置的 Token 监控中查看余额与重置时间"
+            }
             // 502/503：服务端部署窗口/过载，明确提示而非笼统"不可用"
             if code == 502 || code == 503 || code == 504 {
                 return "服务端正在更新或繁忙，请稍后重试（\(code)）"
@@ -2428,7 +2476,8 @@ public final class APIClient: ObservableObject {
     public func createWorkflow(
         title: String,
         description: String,
-        desiredOutput: String
+        desiredOutput: String,
+        sourceDocumentId: String? = nil
     ) async throws -> WorkflowCreateResponseDTO {
         try await request(
             WorkflowCreateResponseDTO.self,
@@ -2437,7 +2486,8 @@ public final class APIClient: ObservableObject {
             body: WorkflowCreateRequestDTO(
                 title: title,
                 description: description,
-                desiredOutput: desiredOutput
+                desiredOutput: desiredOutput,
+                sourceDocumentId: sourceDocumentId
             )
         )
     }
@@ -2662,6 +2712,43 @@ public final class APIClient: ObservableObject {
             WorkflowArtifactContentDTO.self,
             path: "workflow-executions/\(encodedPath(executionId))/artifacts/\(encodedPath(artifactId))/content"
         )
+    }
+
+    public func uploadDocument(data: Data, filename: String, contentType: String, fileOptOut: Bool = false) async throws -> DocumentReceiptDTO {
+        let url = baseURL.appendingPathComponent("api/v1/documents")
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = data
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "document", forHTTPHeaderField: "X-File-Name")
+        request.setValue(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), forHTTPHeaderField: "X-Content-Hash")
+        if fileOptOut { request.setValue("true", forHTTPHeaderField: "X-File-Opt-Out") }
+        applyClientContract(to: &request)
+        let response = try await perform(request, session: session, canRetry: false)
+        return try decoder.decode(DocumentReceiptDTO.self, from: response)
+    }
+
+    public func downloadAuthenticated(path: String, expectedHash: String) async throws -> Data {
+        let url = baseURL.appendingPathComponent("api/v1").appendingPathComponent(path)
+        var request = URLRequest(url: url); request.httpMethod = "GET"; request.setValue("application/octet-stream", forHTTPHeaderField: "Accept"); applyClientContract(to: &request)
+        let data = try await perform(request, session: session, canRetry: true)
+        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard actual == expectedHash.lowercased() else { throw APIError.network("文件完整性校验失败") }
+        return data
+    }
+
+    public func fetchAuthenticatedText(path: String) async throws -> String {
+        let url = baseURL.appendingPathComponent("api/v1").appendingPathComponent(path)
+        var request = URLRequest(url: url); request.httpMethod = "GET"; request.setValue("text/plain", forHTTPHeaderField: "Accept"); applyClientContract(to: &request)
+        let data = try await perform(request, session: session, canRetry: true)
+        guard let text = String(data: data, encoding: .utf8) else { throw APIError.decoding("文本编码无效") }
+        return text
+    }
+
+    public func reviewPresentationStage(executionId: String, artifact: WorkflowArtifactDTO, decision: String, comment: String, slideNumber: Int? = nil) async throws -> WorkflowExecutionDTO {
+        struct Body: Encodable {
+            let artifactId, expectedHash: String; let artifactVersion: Int; let decision, comment: String; let slideNumber: Int?
+            enum CodingKeys: String, CodingKey { case artifactId = "artifact_id", expectedHash = "expected_hash", artifactVersion = "artifact_version", decision, comment, slideNumber = "slide_number" }
+        }
+        return try await request(WorkflowExecutionDTO.self, path: "workflow-executions/\(encodedPath(executionId))/review-stage", method: "POST", body: Body(artifactId: artifact.id, expectedHash: artifact.contentHash, artifactVersion: artifact.metadata.artifactVersion ?? 1, decision: decision, comment: comment, slideNumber: slideNumber))
     }
 
     public func cancelWorkflowExecution(id: String) async throws -> WorkflowExecutionDTO {

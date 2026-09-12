@@ -25,7 +25,6 @@ enum TableLayout {
 
 public struct TableCard: View {
     public let block: TableBlock
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     public init(block: TableBlock) {
@@ -78,10 +77,10 @@ public struct TableCard: View {
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                .stroke(AppTheme.Colors.quantumBlue.opacity(colorScheme == .dark ? 0.42 : 0.24), lineWidth: 1)
+                .stroke(AppTheme.Colors.quantumBlue.opacity(0.24), lineWidth: 1)
         )
         .shadow(
-            color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.08),
+            color: Color.black.opacity(0.08),
             radius: 22,
             x: 0,
             y: 6
@@ -123,8 +122,8 @@ public struct TableCard: View {
         .background(
             LinearGradient(
                 colors: [
-                    AppTheme.Colors.quantumBlue.opacity(colorScheme == .dark ? 0.13 : 0.08),
-                    AppTheme.Colors.quantumViolet.opacity(colorScheme == .dark ? 0.08 : 0.04),
+                    AppTheme.Colors.quantumBlue.opacity(0.08),
+                    AppTheme.Colors.quantumViolet.opacity(0.04),
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing

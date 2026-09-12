@@ -164,4 +164,6 @@ async def test_authenticated_summary_endpoint_is_user_scoped(monkeypatch):
         )
     assert response.status_code == 200
     assert response.json()["total_tokens"] == 150
+    assert response.json()["quota"]["period_kind"] == "calendar_month"
+    assert response.json()["quota"]["limit_tokens"] == 250_000
     assert invalid.status_code == 400

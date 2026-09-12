@@ -330,6 +330,5 @@ public struct AgentCreatorView: View {
 #Preview("AgentCreatorView - Dark") {
     AgentCreatorView()
         .environmentObject(AppState())
-        .preferredColorScheme(.dark)
         .padding()
 }

@@ -45,5 +45,4 @@ public struct QuantumAvatarView: View {
     }
     .padding()
     .background(AppTheme.Colors.groupedBackground)
-    .preferredColorScheme(.dark)
 }

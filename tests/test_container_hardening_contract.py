@@ -28,6 +28,7 @@ def test_runtime_images_are_pinned_reproducible_non_root_and_healthy() -> None:
         assert "registry.npmmirror.com" not in text
         assert f"USER {user}" in text
         assert "HEALTHCHECK" in text
+    assert "font-noto-cjk=0_git20220127-r1" in _dockerfile("backend/Dockerfile")
     assert "registry.npmmirror.com" not in _dockerfile("frontend/package-lock.json")
 
 
