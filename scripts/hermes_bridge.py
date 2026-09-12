@@ -3014,6 +3014,9 @@ def _normalize_presentation_reply(reply: str) -> str:
             if layout == "section" and slide.get("subtitle"):
                 slide["layout"] = "title"
                 layout = "title"
+            if layout == "section" and isinstance(slide.get("key_points"), list):
+                slide["layout"] = "bullets"
+                layout = "bullets"
             if layout == "process" and isinstance(slide.get("steps"), list):
                 slide["layout"] = "bullets"
                 slide["bullets"] = slide.pop("steps")
