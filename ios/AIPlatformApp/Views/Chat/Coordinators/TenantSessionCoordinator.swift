@@ -238,7 +238,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     /// 回前台、重建 ChatView 或切回会话时，仅对账既有 server-side Run。
-    /// 不重发原问题；running 进入 status monitor，只有明确 not_found/timeout 才允许用户重跑。
+    /// 不重发原问题；running 进入 status monitor，只有明确终止时才允许用户重跑。
     public func reconcileActiveRun() {
         guard !isGenerating, hasAuthenticatedSession() else { return }
         let sid = sessionManager.activeSessionID()
@@ -2328,7 +2328,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.showToast("无法确认服务器状态，未重复执行")
                 return
             }
-            // 只有服务端明确无可恢复 Run 时才由用户这次点击触发 regenerate。
+            // 只有服务端明确无可恢复或已失败的 Run 时才由用户这次点击触发 regenerate。
             // 不 cancel 旧 SSE，避免其延迟 cancel 请求跨代杀死刚创建的新 Run。
             self.statusPollTask?.cancel()
             self.isGenerating = false
@@ -2607,7 +2607,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     nonisolated static func statusAllowsRegenerate(_ status: String) -> Bool {
-        ["timeout", "not_found"].contains(status)
+        ["failed", "timeout", "not_found"].contains(status)
     }
 
     nonisolated static func terminalStatusMessage(_ status: String) -> String? {
@@ -2714,7 +2714,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     /// 重新生成先对账 server-side Run：completed 回填，running 恢复同一 request 的 monitor；
-    /// 只有 Bridge 明确返回 timeout/not_found 时才携带 regenerate=true 创建新 Run。
+    /// 只有 Bridge 明确返回 failed/timeout/not_found 时才携带 regenerate=true 创建新 Run。
     public func retryMessage(_ messageId: String) {
         guard !isGenerating else {
             showToast("原任务仍在 Hermes 后台处理中，无需重复执行")

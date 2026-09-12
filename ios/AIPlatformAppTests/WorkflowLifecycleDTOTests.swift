@@ -1632,6 +1632,7 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
     func testRunningChatStatusNeverAllowsRegenerate() {
         XCTAssertFalse(TenantSessionCoordinator.statusAllowsRegenerate("running"))
         XCTAssertFalse(TenantSessionCoordinator.statusAllowsRegenerate("completed"))
+        XCTAssertTrue(TenantSessionCoordinator.statusAllowsRegenerate("failed"))
         XCTAssertTrue(TenantSessionCoordinator.statusAllowsRegenerate("timeout"))
         XCTAssertTrue(TenantSessionCoordinator.statusAllowsRegenerate("not_found"))
     }
