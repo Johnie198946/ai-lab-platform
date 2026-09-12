@@ -31,20 +31,24 @@
 - `git diff --check`: 通过。
 - iOS App 与测试目标编译: 通过。
 - XCTest: `WorkflowLifecycleDTOTests/testRunningChatStatusNeverAllowsRegenerate`，1 test，0 failures。
+- 授权合并后的相关 Python 回归：`tests/test_document_presentation.py` 与 `tests/test_local_single_tenant_agent_os_hardening.py`，33 passed、1 skipped。
 - 首次本机测试尝试因禁用签名无法安装；第二次因 provisioning profile 不含本机失败；改用 iOS Simulator 后测试通过。两次均非代码失败。
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 待提交。
-- GitHub remote/ref/SHA: 用户已授权 push，待执行并用 `git ls-remote` 核验。
+- status: `DEPLOYED`
+- implementation/source SHA: `7efa32f7704367e26b473dc2bbab996289c742cf`。
+- authorized convergence merge SHA: `45c502e28dea35515883820e0feea64c14178eea`；保留 `origin/main` 与 `source/main` 分叉后的双方提交，无冲突合并。
+- GitHub remote/ref/SHA: 实现提交曾由 `git ls-remote` 核验为 `7efa32f7704367e26b473dc2bbab996289c742cf`；最终双远端 SHA 在本 manifest 提交后核验并记录于标准完成通报。
 - server_before: 不适用；本任务是纯 iOS 源码变更，不改服务器运行时。
 - server_after: 不适用；服务器不部署无效的客户端源码。
-- health_check: 本地 XCTest 通过；Archive、签名与 App Store Connect 回读待执行。
-- functional_check: 本地回归测试通过；TestFlight build 34 上传与 Apple processing 回读待执行。
+- archive: `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-13/Quantumn-1.0.3-34.xcarchive`；`ARCHIVE SUCCEEDED`；回读 `com.ailab.AIPlatformApp`、`1.0.3 (34)`、Team `AALA948YY5`。
+- archive binary SHA-256: `d56014f51f7b67d7f1c4ab005bad0a80a2393a58d881946d5548492715eafcdd`。
+- health_check: `codesign --verify --deep --strict` 通过；App Store Connect 返回 `Upload succeeded`、`Uploaded package is processing` 与 `EXPORT SUCCEEDED`。
+- functional_check: 本地断网失败态恢复回归测试 1 test、0 failures；TestFlight build 34 已上传，Apple processing/测试组可见性尚未回读。
 - rollback_point: Git 基线 `da6b9370cc5a000071970cb14961560332581a14`；TestFlight build 33。
 
 ## 风险与未完成项
 
-- 修复尚待提交、推送并上传 TestFlight build 34，当前设备上的已发布版本暂未变化。
+- Apple processing 与测试组可见性尚未回读，因此不标记为 `VERIFIED`；用户需在 TestFlight 可见后安装 build 34。
 - 未执行真实弱网端到端操作；状态机分支与编译已由 XCTest 覆盖。
