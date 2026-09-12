@@ -6520,7 +6520,9 @@ def _run_agent_sync(
         has_client_context = (
             client_session_context is not None and client_context_claims is not None
         )
-        if has_client_context or (note_draft_request and note_context_claims is not None):
+        if note_context_claims is not None and (
+            has_client_context or note_draft_request or knowledge_action_enabled
+        ):
             assert note_context_claims is not None
             transcript = (
                 client_session_context

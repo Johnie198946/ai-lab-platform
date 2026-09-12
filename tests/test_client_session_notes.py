@@ -697,6 +697,67 @@ def test_save_request_without_knowledge_action_fails_closed(monkeypatch, tmp_pat
     assert not any(item.get("type") == "done" for item in emitted)
 
 
+def test_knowledge_action_context_does_not_depend_on_save_wording(monkeypatch, tmp_path):
+    import queue
+    import sys
+    import types
+    from typing import Any, cast
+    import scripts.hermes_bridge as bridge
+
+    goal = "整理并保存当前获准知识中关于超聚变的核心内容"
+    assert bridge._is_note_draft_request(goal) is False
+
+    class FakeAgent:
+        session_id = "hermes-knowledge-action"
+
+        def run_conversation(self, *_args, **_kwargs):
+            result = json.loads(bridge._knowledge_action_propose_tool({
+                "summary": "保存超聚变笔记",
+                "steps": [{
+                    "kind": "create_note",
+                    "title": "超聚变",
+                    "markdown": "# 超聚变\n\n核心内容",
+                }],
+            }))
+            assert result["success"] is True
+            return {"final_response": "已生成待确认操作卡。"}
+
+        def close(self):
+            return None
+
+    class FakeSessionDB:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        bridge,
+        "_build_in_process_agent",
+        lambda *_args, **_kwargs: (FakeAgent(), FakeSessionDB(), {"triage": None}),
+    )
+    monkeypatch.setattr(bridge, "_update_session_mapping", lambda *_args, **_kwargs: None)
+    gateway_context = types.ModuleType("gateway.session_context")
+    setattr(gateway_context, "declare_stateless_channel", lambda: None)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", gateway_context)
+
+    events = queue.Queue()
+    bridge._run_agent_sync(
+        goal,
+        "stable-ios-session",
+        None,
+        events,
+        [None],
+        knowledge_claims={"tenant_key": "tenant-a", "user_id": "user-a"},
+        sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
+        knowledge_action_enabled=True,
+    )
+
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    assert any(item.get("type") == "knowledge_action_draft" for item in emitted)
+    assert emitted[-1]["type"] == "done"
+
+
 
 def test_sandbox_identity_rejects_cross_user_claim_mix():
     import scripts.hermes_bridge as bridge

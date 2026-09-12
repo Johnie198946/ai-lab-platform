@@ -34,12 +34,14 @@
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 未提交（用户未要求）。
-- GitHub remote/ref/SHA: 用户已授权 push，待执行并用 `git ls-remote` 核验。
+- status: `DEPLOYED`
+- implementation/archive source SHA: `d2266e468b0af032d2c5cbf5a114f0cec89b1354`。
+- GitHub remote/ref/SHA: `source/main` 与 `origin/main` 均由 `git ls-remote` 核验为 `d2266e468b0af032d2c5cbf5a114f0cec89b1354`。
 - server_before: 不适用，未授权部署。
 - server_after: 不适用，未授权部署。
-- health_check: 不适用，未部署。
-- functional_check: iOS 定向单元测试通过；未执行真机线上功能检查。
-- rollback_point: 未部署；回滚可删除本任务 worktree 中三处未提交改动。
-- remaining_risks: 尚未在用户截图对应的真机与线上账号环境复测。
+- archive: `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-13/Quantumn-1.0.3-35.xcarchive`；`ARCHIVE SUCCEEDED`；回读 `com.ailab.AIPlatformApp`、`1.0.3 (35)`、Team `AALA948YY5`。
+- archive binary SHA-256: `7b052291755bc0965d1a1be4cf595c86ea7645891840a67eeaddf2bffc88a4c6`。
+- health_check: `codesign --verify --deep --strict` 通过；App Store Connect 返回 `Upload succeeded`、`Uploaded package is processing` 与 `EXPORT SUCCEEDED`。
+- functional_check: iOS 定向单元测试 2 tests、0 failures；TestFlight build 35 已上传，Apple processing/测试组可见性尚未回读。
+- rollback_point: Git 基线 `0e79ca56b6af25e3725004ad642f86f55435a581`；TestFlight build 34。
+- remaining_risks: Apple processing 与测试组可见性尚未回读；尚未在用户截图对应的真机与线上账号环境复测。
