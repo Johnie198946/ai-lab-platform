@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from html.parser import HTMLParser
+from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
+from threading import BoundedSemaphore
 import re
 import io
 import json
@@ -9,6 +12,26 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+# Shared across provider instances/calls, not a fresh pool for each batch.
+MAX_CONCURRENT_EXTRACTS = 4
+_EXTRACT_POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_EXTRACTS,
+                                   thread_name_prefix="native-extract")
+_EXTRACT_SLOTS = BoundedSemaphore(MAX_CONCURRENT_EXTRACTS)
+_PDF_PARSE_SLOTS = BoundedSemaphore(1)
+
+
+def _bounded(slots):
+    def decorate(fn):
+        @wraps(fn)
+        def run(*args, **kwargs):
+            with slots:
+                return fn(*args, **kwargs)
+        return run
+    return decorate
+
 
 # Independent PDF budgets; HTML limits and network policy remain unchanged.
 MAX_PDF_RESPONSE_BYTES = 32_000_000
@@ -16,8 +39,8 @@ MAX_PDF_PAGES = 1000
 MAX_PDF_TEXT_CHARS = 1_000_000
 PDF_PARSE_TIMEOUT_SECONDS = 20.0
 PDF_FETCH_TIMEOUT_SECONDS = 60.0
-from typing import Any
-from urllib.parse import urljoin, urlparse
+# At most four capped downloads are retained and only one offline PDF worker
+# parses at a time, including calls made outside the batch provider.
 
 
 MAX_REDIRECTS = 5
@@ -202,6 +225,7 @@ def _pdf_document(body: bytes, page_limit: int, char_limit: int) -> dict[str, An
         raise ValueError(f"Invalid or unsupported PDF ({type(exc).__name__})") from exc
 
 
+@_bounded(_PDF_PARSE_SLOTS)
 def _parse_pdf(body: bytes) -> dict[str, Any]:
     if len(body) > MAX_PDF_RESPONSE_BYTES:
         raise ValueError("PDF byte limit exceeded")
@@ -242,6 +266,7 @@ def _decode_response(response: Any, body: bytes) -> tuple[str, str]:
     return "", re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+@_bounded(_EXTRACT_SLOTS)
 def extract_one(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Fetch one public page with validated redirects and a hard byte cap."""
     import httpx
@@ -260,6 +285,8 @@ def extract_one(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[s
                         raise ValueError("Too many redirects")
                     current = urljoin(current, location)
                     continue
+                if not 200 <= response.status_code < 300:
+                    raise ValueError(f"HTTP error: {response.status_code}")
                 chunks: list[bytes] = []
                 size = 0
                 prefix = b""
@@ -280,8 +307,6 @@ def extract_one(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[s
                 pdf = _is_pdf(response, body[:5])
                 pdf_metadata = {}
                 if pdf:
-                    if response.status_code >= 400:
-                        raise ValueError(f"PDF HTTP error: {response.status_code}")
                     document = _parse_pdf(body)
                     title = document["title"]
                     content = f"Source: {current}\n\n" + document["content"]
@@ -332,20 +357,20 @@ def build_provider():
 
         def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
             del kwargs
-            results = []
-            for url in urls:
+            def one(url):
                 try:
-                    results.append(extract_one(url))
+                    return extract_one(url)
                 except Exception as exc:  # noqa: BLE001 - per-URL typed failure
-                    results.append({
+                    return {
                         "url": url,
                         "title": "",
                         "content": "",
                         "raw_content": "",
                         "error": f"AI Lab native extract failed: {exc}",
                         "metadata": {"sourceURL": url},
-                    })
-            return results
+                    }
+            # map preserves input order even when requests finish out of order.
+            return list(_EXTRACT_POOL.map(one, urls))
 
     return AILabNativeExtractProvider()
 

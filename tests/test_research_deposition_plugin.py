@@ -283,6 +283,20 @@ class ResearchDepositionTests(unittest.TestCase):
         task = task or self.ctx.state.get(self.deposit.key(self.deposit.scope(self.scope)))
         return next(iter(task["items"].values()))
 
+    def test_execute_scans_aggregate_status_once(self):
+        self.begin()
+        with patch.object(self.deposit, "status", wraps=self.deposit.status) as status:
+            result = self.execute()
+        self.assertTrue(result["success"], result)
+        aggregates = [call for call in status.call_args_list if "items" in call.args[0]]
+        self.assertEqual(len(aggregates), 1)
+        self.assertEqual(result["complete"], result["task_complete"])
+        self.assertTrue(result["item_complete"])
+        # No status memoization: changing the receipt must fail the next check.
+        item = self.item_record()
+        (self.vault / item["receipt"]["raw_path"]).write_text("Synthetic tamper")
+        self.assertFalse(self.deposit.status(item)["success"])
+
     def test_actual_context_config_and_registration(self):
         self.assertEqual(self.ctx.profile_name, "default")
         self.assertEqual(self.ctx.get_config("research_deposit")["vault_root"], str(self.vault))

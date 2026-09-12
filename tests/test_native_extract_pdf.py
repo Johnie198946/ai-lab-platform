@@ -210,6 +210,95 @@ def test_html_suffix_does_not_grant_pdf_budget(provider, monkeypatch):
     assert result["title"] == "Challenge"
 
 
+@pytest.mark.parametrize("status", [403, 429, 503, 304])
+def test_http_error_html_rejected_before_body(provider, monkeypatch, status):
+    gates(monkeypatch)
+    class Unreadable(httpx.SyncByteStream):
+        def __iter__(self):
+            pytest.fail("HTTP error body must not be read or cached as evidence")
+            yield b""
+    transport(monkeypatch, lambda req: httpx.Response(status, headers={"content-type": "text/html"}, stream=Unreadable()))
+    with pytest.raises(ValueError, match=f"HTTP error: {status}"):
+        provider.extract_one("https://example.org/error")
+
+
+def test_shared_concurrency_order_and_failure_isolation(provider, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+    monkeypatch.setitem(sys.modules, "agent.web_search_provider", types.SimpleNamespace(WebSearchProvider=object))
+    gates(monkeypatch)
+    lock, release = threading.Lock(), threading.Event()
+    active = peak = 0
+    reached = threading.Event()
+    def handler(req):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == provider.MAX_CONCURRENT_EXTRACTS:
+                reached.set()
+        try:
+            assert release.wait(5), "batch did not execute concurrently"
+            time.sleep(0.005 * (3 - int(req.url.path.strip("/")) % 4))
+            status = 503 if req.url.path == "/2" else 200
+            return httpx.Response(status, headers={"content-type": "text/plain"}, text=str(req.url))
+        finally:
+            with lock:
+                active -= 1
+    transport(monkeypatch, handler)
+    batches = [[f"https://example.org/{i}" for i in range(start, start + 6)] for start in (0, 6)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        pending = [pool.submit(provider.build_provider().extract, urls) for urls in batches]
+        direct = pool.submit(provider.extract_one, "https://example.org/12")
+        try:
+            assert reached.wait(5), "serial regression: four requests never overlapped"
+            assert peak == provider.MAX_CONCURRENT_EXTRACTS
+        finally:
+            release.set()
+        results = [f.result(timeout=10) for f in pending]
+        assert direct.result(timeout=10)["content"].endswith("/12")
+    assert peak == provider.MAX_CONCURRENT_EXTRACTS
+    for urls, rows in zip(batches, results):
+        assert [row["url"] for row in rows] == urls
+    assert "HTTP error: 503" in results[0][2]["error"]
+    assert results[0][2]["content"] == ""
+    assert all(row["content"] for row in results[1])
+
+
+def test_shared_pdf_worker_limit_and_slot_release(provider, monkeypatch):
+    import concurrent.futures
+    import threading
+    import time
+    lock = threading.Lock()
+    active = peak = calls = 0
+    def worker(*args, **kwargs):
+        nonlocal active, peak, calls
+        with lock:
+            active += 1
+            calls += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.02)
+            if kwargs["input"] == b"bad":
+                raise provider.subprocess.TimeoutExpired("fixture", 1)
+            return types.SimpleNamespace(returncode=0, stdout=b'{"content":"synthetic"}')
+        finally:
+            with lock:
+                active -= 1
+    monkeypatch.setattr(provider.subprocess, "run", worker)
+    def run(body):
+        try:
+            return provider._parse_pdf(body)
+        except ValueError as exc:
+            return str(exc)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(run, [b"bad"] + [b"pdf"] * 7))
+    assert calls == 8 and peak == 1
+    assert "time budget" in rows[0]
+    assert all(row == {"content": "synthetic"} for row in rows[1:])
+
+
 def test_http_error_pdf_not_evidence(provider, monkeypatch):
     gates(monkeypatch)
     transport(monkeypatch, lambda req: httpx.Response(403, headers={"content-type": "application/pdf"}, content=pdf_bytes()))

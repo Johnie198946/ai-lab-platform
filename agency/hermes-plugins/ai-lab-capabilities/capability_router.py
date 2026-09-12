@@ -38,7 +38,7 @@ MAX_PROFESSIONAL_INJECTED_CHARS = 6000
 _INSTALLED = False
 _STATS_LOCK = threading.Lock()
 _WEB_POLICY_LOCK = threading.Lock()
-_WEB_RESEARCH_TURNS: dict[str, int] = {}
+_WEB_RESEARCH_TURNS: dict[str, dict[str, str]] = {}
 _LOCAL_STATE_LOCK = threading.RLock()
 _LOCAL_TURN_STATES: dict[str, dict[str, Any]] = {}
 _GATEWAY_IDENTITIES: dict[tuple[str, str, str], str] = {}
@@ -232,7 +232,7 @@ _SIMPLE_EXPLANATION_RE = re.compile(
     re.I,
 )
 _HIGH_ACTION_RE = re.compile(
-    r"(?:研究|调研|设计|开发|修复|部署|发布|审计|实现|搭建|重构|迁移|"
+    r"(?:研究|调研|设计|开发|修复|部署|发布|打包|上传|审计|实现|搭建|重构|迁移|"
     r"做一份|生成|创建|修改|build|create|research|design|develop|implement|"
     r"deploy|audit|refactor|migrate)",
     re.I,
@@ -429,6 +429,29 @@ def _string_list(value: Any) -> list[str]:
     return list(dict.fromkeys(str(item).strip()[:140] for item in values if str(item).strip()))[:20]
 
 
+def _local_code_debug_intent(query: str) -> bool:
+    """Abstain from noisy catalog matches, not from executing the task.
+
+    Local investigation (even with research vocabulary) belongs to the current
+    agent unless a capability's scope is established separately. Mixed tasks
+    still retain all existing tools and permissions; this grants none.
+    """
+    text = query or ""
+    return bool(
+        re.search(
+            r"(?:本地|现有|当前|仓库|项目|local|existing|repository|repo).{0,24}"
+            r"(?:代码|源码|调用链|调用逻辑|code|source|call.?chain)|"
+            r"(?:代码|源码|code|source).{0,16}(?:仓库|repository|repo)",
+            text, re.I,
+        )
+        and re.search(
+            r"定位|排查|排障|调试|根因|瓶颈|耗时|变慢|下降|异常|故障|"
+            r"debug|diagnos|troubleshoot|root.?cause|bottleneck|slow|latency",
+            text, re.I,
+        )
+    )
+
+
 def _skill_route_class(query: str) -> str:
     text = (query or "").strip()
     if not text or _CASUAL_RE.fullmatch(text):
@@ -475,6 +498,7 @@ def _govern_skill(skill: dict[str, Any]) -> dict[str, Any]:
         "skill_level": level,
         "trigger_phrases": triggers,
         "negative_phrases": negatives,
+        "_required_query_pattern": override.get("required_query_pattern", ""),
     }
 
 
@@ -486,6 +510,9 @@ def _negative_matches(query: str, phrases: Iterable[str]) -> bool:
         phrase_tokens = _tokens(phrase)
         if normalized and normalized in normalized_query:
             return True
+        # Negation must be present, not discarded by token coverage.
+        if re.match(r"不|不要|不能|not\b|do not\b", phrase, re.I):
+            continue
         if phrase_tokens and len(query_tokens & phrase_tokens) / len(phrase_tokens) >= 0.85:
             return True
     return False
@@ -598,6 +625,9 @@ def _score_capability(
     query: str,
     stats: dict[str, dict[str, Any]],
 ) -> tuple[float, dict[str, float]]:
+    required = capability.get("_required_query_pattern")
+    if capability.get("kind") == "skill" and required and not re.search(required, query):
+        return 0.0, {"excluded": 1.0}
     if capability.get("kind") == "skill" and _negative_matches(
         query, capability.get("negative_phrases") or []
     ):
@@ -708,6 +738,8 @@ def recommend(
             inventory = [_direct_capability()] + _skill_capabilities() + _agency_capabilities()
     else:
         inventory = list(capabilities)
+    if _local_code_debug_intent(query):
+        inventory = [item for item in inventory if item.get("kind") == "direct"]
     history = stats if stats is not None else _load_stats()
     ranked: list[tuple[float, dict[str, Any], dict[str, float]]] = []
     for capability in inventory:
@@ -1583,6 +1615,7 @@ def _ordinary_knowledge_context(query: str) -> str:
         or _DIRECT_RESPONSE_RE.fullmatch(text)
         or re.fullmatch(r"(?:hi|hello|hey|你好|您好|在吗|谢谢|多谢|好的|收到|晚安|早安)[！!。,.，?？\s]*", text, re.I)
         or _PURE_TRANSLATION_RE.match(text)
+        or _local_code_debug_intent(text)
     ):
         return ""
     # Only advertise the method if Hermes' native discovery can actually find
@@ -1635,7 +1668,7 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
         with _WEB_POLICY_LOCK:
             if len(_WEB_RESEARCH_TURNS) >= 512:
                 _WEB_RESEARCH_TURNS.clear()
-            _WEB_RESEARCH_TURNS[turn_key] = 0
+            _WEB_RESEARCH_TURNS.setdefault(turn_key, {})
     marker = _TRIAGE_MARKER_RE.match(user_message or "")
     if marker is not None:
         route_class, agency_enabled = marker.groups()
@@ -1972,21 +2005,27 @@ def _pre_tool_call(
             return {
                 "action": "block",
                 "message": (
-                    "Public-page research must not use terminal/curl. Use web_extract once; "
+                    "Public-page research must not use terminal/curl. Use web_extract for new URLs; "
                     "if it failed, use browser_exec with a real rendered browser, then web_search."
                 ),
             }
-        if tool_name == "web_extract":
-            calls = _WEB_RESEARCH_TURNS[turn_key]
-            if calls >= 1:
+        if effective_tool == "web_extract":
+            states = _WEB_RESEARCH_TURNS[turn_key]
+            urls = effective_args.get("urls", [])
+            if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+                return {"action": "block", "message": "web_extract requires a list of URLs."}
+            blocked = [u for u in urls if states.get(u) in {"pending", "failed"}]
+            if blocked:
                 return {
                     "action": "block",
                     "message": (
-                        "web_extract was already attempted this turn. Do not retry the same "
-                        "backend; use browser_exec with a real rendered browser, then web_search."
+                        "web_extract already pending or failed for these URLs: "
+                        + json.dumps(blocked) + ". Extract other URLs separately; for failed URLs "
+                        "use browser_exec with a real rendered browser, then web_search."
                     ),
                 }
-            _WEB_RESEARCH_TURNS[turn_key] = calls + 1
+            for url in urls:
+                states[url] = "pending"
     return None
 
 
@@ -2018,6 +2057,27 @@ def _post_tool_call(
     **kwargs: Any,
 ) -> None:
     session_id = str(kwargs.get("session_id") or "")
+    effective_tool, effective_args = _effective_local_call(tool_name, args)
+    turn_key = str(kwargs.get("turn_id") or kwargs.get("task_id") or session_id or "")
+    if effective_tool == "web_extract" and kwargs.get("status") != "blocked":
+        try:
+            payload = json.loads(result) if isinstance(result, str) else result
+            rows = payload.get("results", []) if isinstance(payload, dict) else []
+            # Core reconstructs original input order, including errors. Match by
+            # position because redirects legitimately change result.url.
+            successful = {url for url, row in zip(effective_args.get("urls", []), rows)
+                          if isinstance(row, dict) and not row.get("error")
+                          and (row.get("content") or row.get("raw_content"))
+                          and not payload.get("error")}
+        except (TypeError, ValueError):
+            successful = set()
+        with _WEB_POLICY_LOCK:
+            states = _WEB_RESEARCH_TURNS.get(turn_key)
+            if states is not None:
+                for url in effective_args.get("urls", []):
+                    if states.get(url) == "pending":
+                        # Content stays in Hermes' existing core cache, never here.
+                        states[url] = "success" if url in successful else "failed"
     attestation = _bind_publication_review_write(tool_name, args, result, session_id)
     if attestation:
         with _LOCAL_STATE_LOCK:

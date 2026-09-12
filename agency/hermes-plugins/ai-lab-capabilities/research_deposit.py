@@ -572,8 +572,9 @@ class ResearchDeposit:
                     self._write(key, item, explicit=True, task=record)
                 self.ctx.state.set(key, record)
                 result = self.status(item)
-                return dict(result, item_id=identity, complete=self.status(record)["complete"],
-                            task_complete=self.status(record)["complete"], item_complete=result["complete"])
+                task_complete = self.status(record)["complete"]
+                return dict(result, item_id=identity, complete=task_complete,
+                            task_complete=task_complete, item_complete=result["complete"])
         except Exception as exc:
             return {"success": False, "stage": "blocked", "error": str(exc)}
 

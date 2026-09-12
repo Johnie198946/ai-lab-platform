@@ -177,6 +177,7 @@ def apply_routing_overrides(
         item = dict(raw)
         override = overrides.get(str(item.get("name") or ""), {})
         item.update({key: value for key, value in override.items() if key in allowed_fields})
+        item["_required_query_pattern"] = override.get("required_query_pattern", "")
         if override:
             item["routing_source"] = "server_override"
             item["routing_issues"] = routing_quality_issues({
@@ -267,6 +268,9 @@ def _negative_match(query: str, negatives: Iterable[str]) -> str | None:
         normalized = _normalized_text(phrase)
         if normalized and normalized in normalized_query:
             return phrase
+        # Negation must be present, not discarded by token coverage.
+        if re.match(r"不|不要|不能|not\b|do not\b", phrase, re.I):
+            continue
         phrase_features = _features(phrase)
         if len(normalized) >= 6 and phrase_features:
             coverage = len(query_features & phrase_features) / len(phrase_features)
@@ -335,6 +339,29 @@ def _score(query: str, skill: dict[str, Any], task_level: str) -> tuple[float, l
     return round(score, 2), reasons
 
 
+def _local_code_debug_intent(query: str) -> bool:
+    """Abstain from noisy catalog matches, not from executing the task.
+
+    Local investigation (even with research vocabulary) belongs to the current
+    agent unless a capability's scope is established separately. Mixed tasks
+    still retain all existing tools and permissions; this grants none.
+    """
+    text = query or ""
+    return bool(
+        re.search(
+            r"(?:本地|现有|当前|仓库|项目|local|existing|repository|repo).{0,24}"
+            r"(?:代码|源码|调用链|调用逻辑|code|source|call.?chain)|"
+            r"(?:代码|源码|code|source).{0,16}(?:仓库|repository|repo)",
+            text, re.I,
+        )
+        and re.search(
+            r"定位|排查|排障|调试|根因|瓶颈|耗时|变慢|下降|异常|故障|"
+            r"debug|diagnos|troubleshoot|root.?cause|bottleneck|slow|latency",
+            text, re.I,
+        )
+    )
+
+
 def rank_skill_candidates(
     query: str,
     skills: Iterable[dict[str, Any]],
@@ -343,12 +370,17 @@ def rank_skill_candidates(
     task_level: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return a bounded, diverse shortlist; negative matches fail closed."""
+    if _local_code_debug_intent(query):
+        return []
     bounded_limit = max(1, min(MAX_LIMIT, int(limit or DEFAULT_LIMIT)))
     level = task_level if task_level in VALID_LEVELS else infer_task_level(query)
     ranked: list[dict[str, Any]] = []
     for raw in skills:
         skill = normalize_skill_record(dict(raw))
         if not skill["name"]:
+            continue
+        required = skill.get("_required_query_pattern")
+        if required and not re.search(required, query):
             continue
         negative = _negative_match(query, skill["negative_phrases"])
         if negative:
