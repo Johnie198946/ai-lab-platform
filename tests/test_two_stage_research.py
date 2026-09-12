@@ -100,7 +100,8 @@ def test_analytical_readout_and_video_guidance_preserve_boundaries(native, text)
                         "print(NUMERIC_EXPRESSION)", "another call dismissing, seeking",
                         "大胆假设（未验证）", "observable prediction", "falsifier",
                         "Defer external factual audits", "do not dump script bodies",
-                        "unit, denominator", "No forced contrarianism"]:
+                        "unit, denominator", "No forced contrarianism",
+                        "(document.body?.innerText || '').slice(0,8000)"]:
         assert requirement in context
     assert "No broad search" in context
     assert not ctx.state.get(deposit.key(scope), {}).get("obligation")
