@@ -24,6 +24,14 @@ def test_server_deploy_downloads_quantum_release_archive() -> None:
     assert "codeload.github.com/Johnie198946/ai-lab-platform" not in script
 
 
+def test_server_deploy_accepts_only_attested_root_owned_offline_source_archive() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert "AI_LAB_SOURCE_ARCHIVE_SHA256" in script
+    assert "/opt/ai-lab-shared/offline-source/ai-lab-platform-[0-9a-f]{40}" in script
+    assert "-type f -user root ! -perm /022" in script
+    assert 'sha256sum "$SOURCE_ARCHIVE"' in script
+
+
 def test_backend_images_are_bound_to_the_exact_release_sha() -> None:
     dockerfile = (UPDATE_SCRIPT.parents[1] / "backend" / "Dockerfile").read_text()
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")

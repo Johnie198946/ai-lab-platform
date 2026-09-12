@@ -1460,6 +1460,8 @@ fi
 
 EXPECTED_SHA="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
 SHORT_SHA="${EXPECTED_SHA:0:12}"
+SOURCE_ARCHIVE="${AI_LAB_SOURCE_ARCHIVE:-}"
+SOURCE_ARCHIVE_SHA256="${AI_LAB_SOURCE_ARCHIVE_SHA256:-}"
 APP_LINK="${AI_LAB_APP_LINK:-/opt/ai-lab-platform}"
 RELEASE_ROOT="${AI_LAB_RELEASE_ROOT:-/opt/releases}"
 SHARED_ROOT="${AI_LAB_SHARED_ROOT:-/opt/ai-lab-shared}"
@@ -1582,9 +1584,21 @@ fi
 RELEASE_VALIDATED=1
 
 echo "==> [1/6] 下载并解包 SHA $EXPECTED_SHA"
-curl -fsSL --retry 3 \
-  "https://codeload.github.com/Johnie198946/Quantum/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
-  -o "$TARBALL"
+if [ -n "$SOURCE_ARCHIVE" ]; then
+  if [[ ! "$SOURCE_ARCHIVE" =~ ^/opt/ai-lab-shared/offline-source/ai-lab-platform-[0-9a-f]{40}\.tar\.gz$ ]] \
+    || [ ! -f "$SOURCE_ARCHIVE" ] || [ -L "$SOURCE_ARCHIVE" ] \
+    || [ "$(find "$SOURCE_ARCHIVE" -maxdepth 0 -type f -user root ! -perm /022 -print -quit)" != "$SOURCE_ARCHIVE" ] \
+    || [[ ! "$SOURCE_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || [ "$(sha256sum "$SOURCE_ARCHIVE" | cut -d' ' -f1)" != "$SOURCE_ARCHIVE_SHA256" ]; then
+    echo "ERROR: offline source archive failed path, ownership, mode, or SHA256 validation" >&2
+    exit 1
+  fi
+  cp "$SOURCE_ARCHIVE" "$TARBALL"
+else
+  curl -fsSL --retry 3 \
+    "https://codeload.github.com/Johnie198946/Quantum/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
+    -o "$TARBALL"
+fi
 tar xzf "$TARBALL" --strip-components=1 -C "$STAGING_DIR"
 chmod 0755 "$RELEASE_DIR"
 test -f "$STAGING_DIR/docker-compose.yml"

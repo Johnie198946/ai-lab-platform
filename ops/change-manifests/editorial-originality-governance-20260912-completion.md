@@ -39,6 +39,7 @@
 - `PYTHONPATH=. python3 -m pytest -q tests/test_*publication*.py`：`173 passed`；仅 4 条既有 Pydantic v2 deprecation warning。
 - 合并生产架构后，出版、鉴权、推理策略、运行放置、租户沙箱和部署合同聚焦测试：`328 passed`；仅 4 条既有 Pydantic v2 deprecation warning。
 - `bash -n scripts/update.sh scripts/deploy_exact_sha.sh`：通过。
+- 生产无凭据访问私有 GitHub codeload 返回 `404`，标准脚本在任何运行时变更前安全停止。脚本复用现有不可变发布流程，仅增加可选的本地源归档入口：固定目录、root 所有、不可组/全局写、SHA-256 必须匹配；部署合同测试 `117 passed`。
 - `xcodebuild ... -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO build`：`BUILD SUCCEEDED`。
 - iOS Simulator 测试：CoreSimulatorService 在本机不可用，未执行；DTO 解码断言已更新，设备构建通过。
 
