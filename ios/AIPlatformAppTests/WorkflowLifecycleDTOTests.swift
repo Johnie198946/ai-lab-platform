@@ -1360,6 +1360,27 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testUserDocumentMessageRendersAttachmentCardInsteadOfTextBubble() {
+        let message = ChatMessage(
+            role: .user,
+            content: "正在上传文档",
+            blocks: [.attachment(AttachmentBlock(
+                fileName: "收入证明.pdf",
+                fileType: .pdf,
+                fileSize: "248 KB",
+                state: .compiling,
+                statusMessage: "私有笔记已入库 · 知识编译中"
+            ))]
+        )
+        let host = UIHostingController(rootView: MessageBubbleView(message: message).frame(width: 390))
+        let fitting = host.sizeThatFits(
+            in: CGSize(width: 390, height: CGFloat.greatestFiniteMagnitude)
+        )
+
+        XCTAssertGreaterThan(fitting.height, 100)
+    }
+
     private func findScrollView(in view: UIView) -> UIScrollView? {
         if let scrollView = view as? UIScrollView {
             return scrollView

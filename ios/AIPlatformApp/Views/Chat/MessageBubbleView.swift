@@ -169,21 +169,31 @@ public struct MessageBubbleView: View {
                 quotedHeaderView(quoted)
             }
 
-            Text(message.content)
-                .font(AppTheme.Typography.body)
-                .foregroundColor(AppTheme.Colors.onPrimary)
-                .padding(.horizontal, AppTheme.Spacing.md)
-                .padding(.vertical, AppTheme.Spacing.sm + 2)
-                .background(AppTheme.Colors.userBubbleGradient)
-                .clipShape(
-                    RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                )
-                .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
-                .shadow(color: Color.black.opacity(0.06), radius: 5, x: 0, y: 2)
-                .contextMenu {
-                    contextMenuActions
+            if userAttachmentBlocks.isEmpty {
+                Text(message.content)
+                    .font(AppTheme.Typography.body)
+                    .foregroundColor(AppTheme.Colors.onPrimary)
+                    .padding(.horizontal, AppTheme.Spacing.md)
+                    .padding(.vertical, AppTheme.Spacing.sm + 2)
+                    .background(AppTheme.Colors.userBubbleGradient)
+                    .clipShape(
+                        RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    )
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
+                    .shadow(color: Color.black.opacity(0.06), radius: 5, x: 0, y: 2)
+                    .contextMenu {
+                        contextMenuActions
+                    }
+            } else {
+                ForEach(userAttachmentBlocks) { block in
+                    blockCard(block)
                 }
+            }
         }
+    }
+
+    private var userAttachmentBlocks: [MessageBlock] {
+        message.blocks.filter { if case .attachment = $0 { return true }; return false }
     }
 
     // MARK: - Assistant Bubble

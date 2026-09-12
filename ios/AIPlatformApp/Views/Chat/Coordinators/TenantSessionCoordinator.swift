@@ -3208,7 +3208,9 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     public func attachDocument(_ url: URL) {
         let name = url.lastPathComponent
+        let metadataAccess = url.startAccessingSecurityScopedResource()
         let sizeBytes = InboxFileManager.shared.fileSizeBytes(at: url) ?? 0
+        if metadataAccess { url.stopAccessingSecurityScopedResource() }
         let sizeText = ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
         let attachment = AttachmentBlock(fileName: name, fileType: attachmentFileType(for: url), fileSize: sizeText, state: .uploading, statusMessage: "正在上传原件")
         let msg = ChatMessage(
