@@ -198,6 +198,61 @@ def test_final_transform_never_falls_back_to_in_memory_receipt(monkeypatch):
     assert "未通过本地 Agent OS 执行验证" in transformed
 
 
+def test_failed_deploy_cannot_claim_concurrent_release_as_its_success():
+    router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    router._LOCAL_TURN_STATES["deploy-failed"] = {"route_class": "GENERAL_QA"}
+    router._post_tool_call(
+        "terminal",
+        {"command": "ssh prod 'bash scripts/update.sh abc'"},
+        json.dumps({"output": "deploy failed", "exit_code": 1}),
+        session_id="deploy-failed",
+    )
+    router._post_tool_call(
+        "terminal",
+        {"command": "ssh prod 'readlink -f /opt/ai-lab-platform/current'"},
+        json.dumps({"output": "/opt/releases/other", "exit_code": 0}),
+        session_id="deploy-failed",
+    )
+
+    transformed = router._transform_llm_output(
+        "部署已经成功，线上版本由另一个 release 提供。",
+        session_id="deploy-failed",
+    )
+
+    assert transformed.startswith("本次部署未通过操作归因验证")
+    assert "并发任务" in transformed
+
+
+def test_matching_deploy_receipt_allows_success_claim():
+    router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    router._LOCAL_TURN_STATES["deploy-retried"] = {"route_class": "GENERAL_QA"}
+    command = "bash scripts/deploy_exact_sha.sh " + "a" * 40
+    router._post_tool_call(
+        "terminal",
+        {"command": command},
+        json.dumps({"output": "deploy failed", "exit_code": 1}),
+        session_id="deploy-retried",
+    )
+    router._post_tool_call(
+        "terminal",
+        {"command": command},
+        json.dumps({
+            "output": "\n".join((
+                "deployed_sha=" + "a" * 40,
+                "release=/opt/releases/ai-lab-platform-aaaaaaaaaaaa.ABC123",
+                "rollback_point=/opt/releases/ai-lab-platform-bbbbbbbbbbbb.DEF456",
+            )),
+            "exit_code": 0,
+        }),
+        session_id="deploy-retried",
+    )
+
+    response = "部署已经成功。"
+    assert router._transform_llm_output(response, session_id="deploy-retried") == response
+
+
 def test_canonical_receipt_requires_matching_producer_hash(tmp_path, monkeypatch):
     router = load_router()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

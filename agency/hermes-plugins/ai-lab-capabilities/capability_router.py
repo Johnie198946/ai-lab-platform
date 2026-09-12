@@ -78,6 +78,20 @@ _TRIAGE_MARKER_RE = re.compile(
 _ASYNC_COMPLETION_RE = re.compile(
     r"^\[ASYNC DELEGATION BATCH COMPLETE [—-] (deleg_[A-Za-z0-9]+)\]"
 )
+_DEPLOYMENT_SUCCESS_RE = re.compile(
+    r"(?:部署|发布|上线)(?:已经|已)?(?:成功|完成)|(?:已经|已)(?:部署|发布|上线)|"
+    r"\b(?:successfully\s+deployed|deployment\s+succeeded|deployed\s+successfully)\b",
+    re.I,
+)
+_DEPLOYMENT_COMMAND_RE = re.compile(
+    r"deploy_exact_sha\.sh|scripts/update\.sh|\bgit\s+push\b|\b(?:rsync|scp)\b|"
+    r"\bdocker\s+(?:compose\s+)?(?:build|push|pull|up|down|restart|stop|start)\b|"
+    r"\bsystemctl\s+(?:restart|start|stop|enable|disable)\b|"
+    r"\bkubectl\s+(?:apply|delete|rollout|set|patch)\b|"
+    r"\bhelm\s+(?:upgrade|install|uninstall|rollback)\b|"
+    r"\bterraform\s+(?:apply|destroy)\b",
+    re.I,
+)
 
 # Small domain glossary, not a role catalog.  It fixes CJK recall while the
 # actual inventory remains dynamic and comes from Hermes/Agency themselves.
@@ -1539,6 +1553,14 @@ def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: An
             pass
     with _LOCAL_STATE_LOCK:
         state = _LOCAL_TURN_STATES.get(session_id)
+        if state and state.get("deployment_attribution_failure") and _DEPLOYMENT_SUCCESS_RE.search(
+            response_text
+        ):
+            return (
+                "本次部署未通过操作归因验证：当前会话中的部署写操作返回了非零退出码，"
+                "且没有随后读到与本次操作绑定的 deployed_sha、release 和 rollback_point "
+                "成功回执。后来观察到的线上状态可能来自并发任务，不能据此声明本次部署成功。"
+            )
         if not state or state.get("route_class") != "PROFESSIONAL_TASK":
             return response_text
         if (
@@ -2049,6 +2071,51 @@ def _result_succeeded(result: str) -> bool:
     return not bool(parsed.get("error")) and parsed.get("success", True) is not False
 
 
+def _record_deployment_result(
+    tool_name: str,
+    args: dict[str, Any],
+    result: str,
+    session_id: str,
+) -> None:
+    if tool_name != "terminal" or not session_id:
+        return
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    exit_code = payload.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        return
+    command = str(payload.get("command") or args.get("command") or "")
+    if not _DEPLOYMENT_COMMAND_RE.search(command):
+        return
+    output = str(payload.get("output") or "")
+    receipt = {
+        key: match.group(1)
+        for key, pattern in {
+            "deployed_sha": r"(?m)^deployed_sha=([0-9a-f]{40})$",
+            "release": r"(?m)^release=(/\S+)$",
+            "rollback_point": r"(?m)^rollback_point=(/\S+)$",
+        }.items()
+        if (match := re.search(pattern, output))
+    }
+    with _LOCAL_STATE_LOCK:
+        state = _LOCAL_TURN_STATES.get(session_id)
+        if state is None:
+            return
+        if exit_code == 0 and len(receipt) == 3:
+            state.pop("deployment_attribution_failure", None)
+            state["deployment_receipt"] = receipt
+        elif exit_code != 0:
+            state.pop("deployment_receipt", None)
+            state["deployment_attribution_failure"] = {
+                "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
+                "exit_code": exit_code,
+            }
+
+
 def _post_tool_call(
     tool_name: str,
     args: dict[str, Any],
@@ -2058,6 +2125,7 @@ def _post_tool_call(
 ) -> None:
     session_id = str(kwargs.get("session_id") or "")
     effective_tool, effective_args = _effective_local_call(tool_name, args)
+    _record_deployment_result(effective_tool, effective_args, result, session_id)
     turn_key = str(kwargs.get("turn_id") or kwargs.get("task_id") or session_id or "")
     if effective_tool == "web_extract" and kwargs.get("status") != "blocked":
         try:
