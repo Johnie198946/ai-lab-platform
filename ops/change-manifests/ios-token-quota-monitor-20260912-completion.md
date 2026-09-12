@@ -1,9 +1,9 @@
 # iOS Token quota monitor completion
 
 - task_id: `ios-token-quota-monitor-20260912`
-- status: `TESTED`
+- status: `PUSHED`
 - branch: `main`
-- worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909`
+- worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-quota-release-20260912`
 - baseline/local_head: `fd5f4d0fee0007999502522146e46b7e96ae243e`
 - remote_sha_before_push: `fd5f4d0fee0007999502522146e46b7e96ae243e`
 
@@ -26,14 +26,17 @@
 - Backend focused tests: `7 passed`.
 - Ruff and `git diff --check`: passed.
 - After fast-forwarding to the latest GitHub `main`, iOS simulator build for iPhone 17 Pro / iOS 26.1 SDK: `BUILD SUCCEEDED`.
+- GitHub CI run `34694003108`: success (`lint`, `frontend-build`, and full `build`).
 - Production health: `https://120.24.248.58/health` returned `status=ok`, version `0.8.0`.
 
 ## Delivery
 
-- local_commit: not committed
-- server_before: not read; SSH port 22 refused connection
+- implementation_commit: `f52192365f1512a11dd7baba70c66b3f7dfc6c65`
+- release_gate_commit: `f9dc9275fff05d7205ff16b371a172e4c896ec93`
+- remote_sha: `f9dc9275fff05d7205ff16b371a172e4c896ec93` (verified with `git ls-remote`)
+- server_before: unavailable; SSH alternated between connection refusal and `Permission denied (publickey)` for the historical root endpoint
 - server_after: not deployed
 - health_check: production API healthy before change; local iOS build passed
 - functional_check: quota aggregation and API contract covered by tests; iOS compiled successfully
-- rollback_point: not applicable (local-only changes)
-- remaining_risks: exact production used/remaining totals for `18576600894` remain unavailable; change requires review/commit/push/deployment before real iOS accounts receive quota data and localized quota guidance.
+- rollback_point: not established because no authenticated server session was available
+- remaining_risks: server deployment is blocked until the current restricted management SSH account/key is available; exact production used/remaining totals for `18576600894` remain unavailable; iOS UI delivery still requires a separately accepted App Store/TestFlight build.
