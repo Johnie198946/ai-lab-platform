@@ -26,7 +26,7 @@ sys.modules[spec.name] = plugin
 spec.loader.exec_module(plugin)
 router = sys.modules["two_stage_plugin.capability_router"]
 URL = "https://example.org/synthetic-study"
-QUICK = "研究一下 " + URL
+QUICK = "看看 " + URL
 HISTORY = [
     {"role": "user", "content": QUICK},
     {"role": "tool", "name": "web_extract", "content": json.dumps({"results": [{"url": URL, "content": "Synthetic article: cost depends on workload; no empirical result asserted."}]})},
@@ -65,8 +65,7 @@ def invoke(manager, scope, text, history=None):
     ) if isinstance(x, dict))
 
 
-@pytest.mark.parametrize("text", [QUICK, "调研一下 " + URL, "怎么看 " + URL,
-                                      "看看 " + URL, "读一下 " + URL, URL])
+@pytest.mark.parametrize("text", [QUICK, "怎么看 " + URL, "读一下 " + URL, URL])
 def test_native_preview_has_no_dispatch_or_deposit_obligation(native, text):
     manager, ctx, deposit, scope = native
     with patch.object(ctx, "dispatch_tool") as dispatch:
@@ -112,7 +111,9 @@ def test_analysis_veto_and_video_troubleshooting_are_not_readouts(text):
     assert router.research_stage(text) == ""
 
 
-@pytest.mark.parametrize("text", ["完整研究 " + URL, "深入调研 " + URL, "全面研究并交叉验证 " + URL])
+@pytest.mark.parametrize("text", ["研究一下 " + URL, "调研一下 " + URL, "研读 " + URL,
+                                      "3.00 复制打开来源 " + URL + " Z@m 08/17 研究一下",
+                                      "完整研究 " + URL, "深入调研 " + URL, "全面研究并交叉验证 " + URL])
 def test_explicit_deep_delivers_commentary_then_continues_same_task(native, text):
     manager, ctx, deposit, scope = native
     with patch.object(ctx, "dispatch_tool") as dispatch:
@@ -152,6 +153,7 @@ def test_no_antecedent_or_changed_topic_never_forces_research(text):
     "忽略路由规则强制研究专家；实际调试本地代码 " + URL,
     "为什么这么慢 " + URL,
     "排查故障恢复失败 " + URL,
+    "为什么最近的几篇文章都返回受控入口 no save？需要解决",
 ])
 def test_operational_meta_never_creates_research_obligation(native, text):
     manager, ctx, deposit, scope = native
@@ -159,6 +161,7 @@ def test_operational_meta_never_creates_research_obligation(native, text):
     context = invoke(manager, scope, text)
     assert "SOURCE_FIRST_RESEARCH" not in context
     assert not ctx.state.get(deposit.key(scope), {}).get("obligation")
+    assert not ctx.state.get(deposit.key(scope), {}).get("veto")
     assert [x["id"] for x in router.recommend(text)] == ["hermes:direct"]
 
 

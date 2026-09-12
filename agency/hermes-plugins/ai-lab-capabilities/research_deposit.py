@@ -24,6 +24,10 @@ POLICY_VERSION = "local-research-v1"
 STORAGE_SCOPE = "user_vault_existing_sync"
 _IMPORT_LOCK = threading.Lock()
 NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)|no[ _-]save|view\s+only", re.I)
+NO_SAVE_META = re.compile(
+    r"(?:为什么|为何|排查|修复|解决|返回|报错|入口).{0,40}no[ _-]save|"
+    r"no[ _-]save.{0,40}(?:为什么|为何|排查|修复|解决|返回|报错|入口)", re.I,
+)
 EVIDENCE_REVIEW = re.compile(r"核验|核实|验证|比较|选型|是否可靠|证据|verify|fact.check|compare|recommend", re.I)
 RESEARCH = re.compile(r"https?://|研究|调研|研读|research|investigate|literature review", re.I)
 NOT_RESEARCH = re.compile(r"^\s*(?:请(?:帮我)?\s*|please\s+)?(?:翻译|仅摘要|只(?:做)?摘要|仅(?:做)?总结|只回答|仅回答|translate\b|translation\b|summari[sz]e\b|answer\s+only)", re.I)
@@ -148,7 +152,7 @@ class ResearchDeposit:
         with self.lock(key):
             old = self.ctx.state.get(key, {})
             # Opt-out BEFORE copying any title, URL, body or message digest.
-            if NO_SAVE.search(user_message or ""):
+            if NO_SAVE.search(user_message or "") and not NO_SAVE_META.search(user_message or ""):
                 old.update(veto=True, stage="blocked", reason="no_save")
                 self.ctx.state.set(key, old)
                 return {"context": "[Research deposit blocked: no_save] No save permitted. Lifting requires verified same-material host consent; this host has no supported consent association."}

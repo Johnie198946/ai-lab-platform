@@ -498,9 +498,14 @@ def _single_link_research_stage(query: str) -> str:
         return ""
     full = re.search(r"完整|全面|深入|深度|深研|交叉.{0,3}(?:核验|验证)|多源|"
                      r"研究报告|comprehensive|in.depth|full research", text, re.I)
+    explicit_research = re.search(
+        r"^\s*(?:请(?:帮我)?\s*)?(?:研究|调研|研读)(?:一下|下)?(?:\s|[:：，,]|$)|"
+        r"(?:^|[\s，,。；;!?！？])(?:研究|调研|研读)(?:一下|下)?\s*$",
+        text, re.I,
+    )
     # An explicit source-only limit wins over words quoted in a study title.
     source_only = re.search(r"只(?:要|做|看|读).{0,8}(?:原文|摘要|速读)|不要深研|不做深研", text)
-    return "quick_read_then_deep" if full and not source_only else "quick_read"
+    return "quick_read_then_deep" if (full or explicit_research) and not source_only else "quick_read"
 
 
 def research_stage(user_message: str, *, conversation_history: Any = None) -> str:
