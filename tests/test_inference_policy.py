@@ -73,6 +73,13 @@ async def test_reservation_is_idempotent_bounded_and_missing_usage_is_not_zero(
         "request-0001",
         {"input_tokens": 40, "output_tokens": 2, "model": "server-model"},
     ) == "settled"
+    snapshot = await inference_policy.monthly_quota_snapshot(auth)
+    assert snapshot["limit_tokens"] == 10_000
+    assert snapshot["used_tokens"] == 42
+    assert snapshot["remaining_tokens"] == 9_958
+    assert snapshot["percent_used"] == pytest.approx(0.42)
+    assert snapshot["is_exhausted"] is False
+    assert snapshot["period_kind"] == "calendar_month"
     async with factory() as db:
         row = await db.get(InferenceReservation, {
             "user_id": "u1", "request_id": "request-0001",

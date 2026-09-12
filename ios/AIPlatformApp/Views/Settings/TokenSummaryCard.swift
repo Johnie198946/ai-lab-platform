@@ -21,11 +21,11 @@ public struct TokenSummaryCard: View {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 13))
                     .foregroundColor(AppTheme.Icons.intelligence)
-                Text("真实用量")
+                Text("Token 监控")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(AppTheme.Colors.textPrimary)
                 Spacer()
-                Text("真实记录")
+                Text("服务端账本")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(AppTheme.Colors.securityGreen)
                     .padding(.horizontal, 6)
@@ -57,13 +57,6 @@ public struct TokenSummaryCard: View {
                     Button("重试") { Task { await loadUsage() } }
                 }
                 .frame(minHeight: 180)
-            } else if let summary, summary.totalCalls == 0 {
-                ContentUnavailableView(
-                    "暂无真实用量记录",
-                    systemImage: "chart.bar.xaxis",
-                    description: Text("只统计功能上线后的模型调用，不使用本地估算。")
-                )
-                .frame(minHeight: 180)
             } else if let summary {
                 usageContent(summary)
             }
@@ -84,13 +77,17 @@ public struct TokenSummaryCard: View {
     @ViewBuilder
     private func usageContent(_ summary: UsageSummaryDTO) -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            quotaPanel(summary.quota)
+
+            Divider()
+
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(compact(summary.totalTokens))
                         .font(.system(size: 38, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("总 Token")
+                    Text("近 \(selectedDays) 天实际消耗")
                         .font(AppTheme.Typography.micro)
                         .foregroundColor(AppTheme.Colors.textTertiary)
                 }
@@ -108,7 +105,14 @@ public struct TokenSummaryCard: View {
                 tokenMetric("输出", summary.outputTokens)
             }
 
-            dailyChart(summary.daily)
+            if summary.totalCalls == 0 {
+                Label("近 \(selectedDays) 天暂无调用记录", systemImage: "chart.bar.xaxis")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 72)
+            } else {
+                dailyChart(summary.daily)
+            }
 
             if summary.missingUsageCalls > 0 {
                 Label(
@@ -143,6 +147,105 @@ public struct TokenSummaryCard: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func quotaPanel(_ quota: TokenQuotaDTO?) -> some View {
+        if let quota {
+            let progress = min(max(quota.percentUsed / 100, 0), 1)
+            let accent = quotaColor(quota.percentUsed)
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(quota.isExhausted ? "本月额度已用尽" : "本月额度")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(AppTheme.Colors.textPrimary)
+                        Text("每个自然月重置")
+                            .font(AppTheme.Typography.micro)
+                            .foregroundColor(AppTheme.Colors.textTertiary)
+                    }
+                    Spacer()
+                    Text(percent(quota.percentUsed))
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundColor(accent)
+                }
+
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(AppTheme.Colors.secondaryBackground)
+                        Capsule()
+                            .fill(accent)
+                            .frame(width: proxy.size.width * progress)
+                    }
+                }
+                .frame(height: 12)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("本月 Token 额度")
+                .accessibilityValue("已使用 \(percent(quota.percentUsed))，剩余 \(grouped(quota.remainingTokens)) Token")
+
+                HStack(alignment: .top) {
+                    quotaMetric("已用", quota.usedTokens, accent: accent)
+                    Spacer()
+                    quotaMetric("总额度", quota.limitTokens, accent: AppTheme.Colors.textPrimary)
+                        .multilineTextAlignment(.trailing)
+                }
+
+                HStack(spacing: 5) {
+                    Image(systemName: quota.isExhausted ? "exclamationmark.circle.fill" : "arrow.clockwise.circle")
+                    Text(quota.isExhausted
+                         ? "余额为 0，需等待下月重置"
+                         : quota.percentUsed >= 75
+                            ? "剩余 \(compact(quota.remainingTokens))；复杂请求可能因预留额度不足被拦截"
+                            : "剩余 \(compact(quota.remainingTokens)) · \(resetCopy(quota.periodEnd)) 重置")
+                }
+                .font(AppTheme.Typography.micro)
+                .foregroundColor(quota.isExhausted ? AppTheme.Colors.securityRed : AppTheme.Colors.textSecondary)
+            }
+            .padding(AppTheme.Spacing.lg)
+            .background(accent.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                    .stroke(accent.opacity(0.24), lineWidth: 0.75)
+            }
+        } else {
+            Label("当前服务未返回额度信息，仅展示实际 Token 用量", systemImage: "info.circle")
+                .font(AppTheme.Typography.supporting)
+                .foregroundColor(AppTheme.Colors.textSecondary)
+        }
+    }
+
+    private func quotaMetric(_ title: String, _ value: Int, accent: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(AppTheme.Typography.micro)
+                .foregroundColor(AppTheme.Colors.textTertiary)
+            Text(grouped(value))
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundColor(accent)
+        }
+    }
+
+    private func quotaColor(_ usedPercent: Double) -> Color {
+        if usedPercent >= 90 { return AppTheme.Colors.securityRed }
+        if usedPercent >= 75 { return AppTheme.Colors.securityYellow }
+        return AppTheme.Colors.securityGreen
+    }
+
+    private func percent(_ value: Double) -> String {
+        String(format: value < 10 ? "%.1f%%" : "%.0f%%", value)
+    }
+
+    private func resetCopy(_ isoDate: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        guard let date = formatter.date(from: isoDate) else { return "下月" }
+        let display = DateFormatter()
+        display.locale = Locale(identifier: "zh_CN")
+        display.dateFormat = "M 月 d 日"
+        return display.string(from: date)
     }
 
     private func tokenMetric(_ title: String, _ value: Int) -> some View {

@@ -156,6 +156,18 @@ public struct UsageSummaryDTO: Codable, Hashable {
     public let missingUsageCalls: Int
     public let daily: [UsageDailyDTO]
     public let models: [UsageModelDTO]
+    public let quota: TokenQuotaDTO?
+}
+
+public struct TokenQuotaDTO: Codable, Hashable {
+    public let limitTokens: Int
+    public let usedTokens: Int
+    public let remainingTokens: Int
+    public let percentUsed: Double
+    public let isExhausted: Bool
+    public let periodKind: String
+    public let periodStart: String
+    public let periodEnd: String
 }
 
 /// GET /api/v1/me/subscriptions 及订阅/退订返回
@@ -1685,6 +1697,9 @@ public enum APIError: Error, LocalizedError {
         case .knowledgeScopeChanged:
             return "套餐或知识权限已变化，请刷新知识权限后重试"
         case .server(let code, let msg):
+            if code == 429 && msg.contains("inference_quota_exceeded") {
+                return "本月 Token 可用额度不足以启动本次请求，请在设置的 Token 监控中查看余额与重置时间"
+            }
             // 502/503：服务端部署窗口/过载，明确提示而非笼统"不可用"
             if code == 502 || code == 503 || code == 504 {
                 return "服务端正在更新或繁忙，请稍后重试（\(code)）"
