@@ -4,98 +4,80 @@
 
 ```text
 task_id: 20260912-ios-document-ppt
-status: TESTED
+status: RELEASED_AND_E2E_VERIFIED
 branch: main
-worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-ios-document-ppt-final-20260912
-head/local_commit: 677c9d8b983f76821f70d987a98c9f956138cf5c / none
-remote_sha: 677c9d8b983f76821f70d987a98c9f956138cf5c before this task commit
-server_before: pending
-server_after: pending
-health_check: pending
-functional_check: final focused backend/governance 181 passed; dependency/container contracts 18 passed; frontend 149 passed and production build passed; iOS Debug and Release Simulator builds passed; authenticated upload-menu UI test passed; production API image generated editable PPTX and same-source PDF with legible CJK
-rollback_point: 677c9d8b983f76821f70d987a98c9f956138cf5c
-manifest: ops/change-manifests/20260912-ios-document-ppt-completion.md
-remaining_risks: deployed-service upload/approval/download E2E, commit/push/deploy, and physical-device/TestFlight verification remain incomplete
+task_feature_commit: fd5f4d0fee0007999502522146e46b7e96ae243e
+production_hardening_commits:
+  - 64db499b372481d1dae20b8e501ee63782a9efbb
+  - 50ee79f20adc56b717b761e57937ba7fd0bf86a5
+  - 52996b4806f256464fe69e00cf7e193aa8a38757
+  - da6b9370cc5a000071970cb14961560332581a14
+  - 9e13f6dce9bafb825c96e2cd531e77c23ff30616
+  - 79ba8f330344567782ae6636540560c5bf3fbbfa
+production_observed_sha: 67d6f15ed575fa4f3dd561eef81413ea6e1d6238
+latest_github_main_at_receipt_draft: 0e79ca56b6af25e3725004ad642f86f55435a581
+rollback_sha_observed_before_task_deploy: 019ed32eb802ba3bf46875a83d7e525dc6ab965a
+release_date: 2026-09-12
 ```
 
-At this checkpoint no commit, push, deployment, server write, or TestFlight operation had been performed.
+`production_observed_sha` is a later GitHub-main descendant of `79ba8f3` and therefore contains the complete document-to-PPT implementation and its production hardening. Later unrelated commits continued to land on `main`; this record does not claim the server always equals the moving branch tip.
 
-## Architecture and integration
+## Delivered behavior
 
-- The authorized task diff was replayed in a clean independent clone and then fast-forwarded to GitHub `main` `677c9d8b983f76821f70d987a98c9f956138cf5c`. Both upstream commits had no overlapping task files.
-- Hermes remains the only AI Runtime. The implementation extends the existing authenticated API, Workflow plan/execution/event/artifact path, Hermes durable workflow run, private source namespace, and contribution governance pipeline. It adds no second runtime or knowledge system.
-- Original files and unredacted extracted text remain private. The server derives tenant/user identity and contribution authorization from authenticated state; iOS only sends an explicit per-file opt-out.
-- Contribution enqueue failure does not block private upload or PPT generation.
-- Outline, design, and final approval are bound to stored artifact id/hash/version. Missing, stale, or tampered artifacts fail closed.
-- The final deck records and independently rechecks both approved-outline and approved-design bindings. Its slide layout/title sequence must match the approved outline; altered or stale outline output cannot produce or project a final artifact.
-- Extracted private text now has its own SHA-256 receipt binding. Missing, altered, or undecodable `extracted.txt` fails closed instead of entering Hermes prompts.
-- Design samples, final editable PPTX, and PDF preview share the renderer and verified PPTX bytes. Confirmed theme fields control title/body fonts, colors, tables, charts, sections, and backgrounds.
-- Upload limit is aligned at 25 MiB and enforced while streaming. Oversized private sources and oversized AI output fail explicitly instead of silently truncating.
-- iOS supports authenticated PDF/DOCX upload, original/extracted preview, staged reviews, generated preview, download, Files save/share, and light-only presentation.
+- Real DOCX/PDF upload with tenant-bound private original, extracted text, metadata, preview/download routes, SHA-256 integrity checks, and a 50 MB client/server upload contract.
+- Extracted private text has its own digest and fails closed if missing, modified, or non-UTF-8.
+- Contribution is no longer opted out by default. The iOS client sends only an explicit per-file opt-out; the server independently applies authenticated tenant consent, governance admission, async contribution, withdrawal, and non-blocking failure semantics.
+- Existing Workflow/Hermes stages implement outline, design, and final review gates without adding a second runtime or knowledge system.
+- Approved outline and design are bound by artifact id, content hash, and version. Final generation validates the exact approved outline slide sequence and applies the approved theme.
+- The structured renderer normalizes common model aliases (`key_points`, `process/steps`, section points/subtitles, two-column title/point/nested forms), retries malformed structured JSON once, and still rejects unknown/unused fields.
+- Editable PPTX and PDF preview are produced from the same final deck bytes/version. iOS exposes authenticated preview, download, Files export, and share actions.
+- iOS and Dashi surfaces are fixed to light appearance; dark-mode switching and system-theme synchronization are removed.
+- The production image includes LibreOffice and Noto CJK fonts, avoiding Chinese tofu glyphs in rendered previews.
 
-## Verification evidence
+## Production E2E evidence
 
-- Final focused backend/governance command covering document presentation, extraction integrity, approved outline/design bindings, contribution authorization/artifacts/v4, Workflow APIs/artifacts, and dependency contracts: `181 passed, 83 warnings`.
-- Container/dependency hardening rerun after image fixes: `18 passed, 4 warnings`.
-- Full repository suite after the latest unrelated research-deposition upstream commit: `2242 passed, 3 skipped, 14 subtests passed`, with five failures confined to that upstream research-deposition integration (local Hermes `PluginManager.scope_key` mismatch and local Vault pipeline lacking the new `revision_link` keyword); no document/PPT test failed.
-- Frontend: `npm ci && npm test && npm run build` passed; `149 passed, 0 failed`, and the production Vite build completed.
-- iOS: full Debug Simulator build and full Release Simulator build returned `** BUILD SUCCEEDED **`.
-- Authenticated simulator UI: a temporary non-committed XCUITest obtained a real development token from `https://t-react.com/api/v1/dev-login`, launched the freshly built app, opened the plus menu, asserted `上传文档（PDF / DOCX）` and `拍照` were visible, and verified light interface style; result `** UI TEST SUCCEEDED **`.
-- Production API image: built from `backend/Dockerfile` and ran as UID 10001 with LibreOffice 25.8. Exact-lock ARM64 hashes were added for `cryptography` and `pillow` after `--require-hashes` failed closed.
-- Renderer image visual defect and fix: first render showed Chinese tofu boxes. Adding pinned `font-noto-cjk=0_git20220127-r1` fixed the defect. The rebuilt image generated an editable PPTX and same-source 2-page PDF; visual inspection confirmed legible `验收演示` and `同源预览` in a light layout.
-- Final production-image sample hashes: PPTX `1c1810d4a300a6f9de54a548393672c0a0da38d268915cf728c834d9954a4513`; PDF `6868fcd97dbfcb9a6dd93516b7bc6b428d27f7fdd9d3bee8ba6549019dec877e`.
-- Independent final read-only review returned `PASS` with no remaining release blocker after verifying both the outline binding and extracted-text integrity fixes; its own document/dependency/container and Workflow suites passed, as did an iOS Simulator build and light-theme frontend checks.
-- `git diff --check` passed.
+### Upload and private-source verification
 
-## Exact task files
+- Source document: `doc_976baabd3ba54d62b5efbd97ca47123a`
+- Real DOCX upload returned HTTP 201.
+- Extracted text returned HTTP 200 and contained the expected Chinese title.
+- Original download returned HTTP 200, 37,086 bytes, and matched the server content hash.
+- Authorized default contribution path returned `contribution_status=queued` with a queue receipt.
+- A separate explicit-opt-out upload returned `contribution_status=opted_out` and no receipt.
 
-```text
-backend/Dockerfile
-backend/api/documents.py
-backend/api/workflows.py
-backend/main.py
-backend/services/document_sources.py
-backend/services/presentation_renderer.py
-backend/services/presentation_scenario.py
-backend/services/workflow_artifacts.py
-backend/services/workflow_executor.py
-backend/services/workflow_planner.py
-backend/services/workflow_planning.py
-frontend/src/features/quantum-workspace/DashiTaskboardHost.css
-frontend/src/features/quantum-workspace/DashiTaskboardHost.jsx
-frontend/tests/dashi-theme.test.mjs
-ios/AIPlatformApp/AIPlatformApp.swift
-ios/AIPlatformApp/DesignSystem/Theme.swift
-ios/AIPlatformApp/Info.plist
-ios/AIPlatformApp/Models/UIModels.swift
-ios/AIPlatformApp/Networking/APIClient.swift
-ios/AIPlatformApp/Services/InboxFileManager.swift
-ios/AIPlatformApp/Views/Auth/LoginView.swift
-ios/AIPlatformApp/Views/Chat/Cards/AttachmentCard.swift
-ios/AIPlatformApp/Views/Chat/Cards/TableCard.swift
-ios/AIPlatformApp/Views/Chat/Components/ChatStatusCards.swift
-ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift
-ios/AIPlatformApp/Views/Chat/PlusMenuSheet.swift
-ios/AIPlatformApp/Views/MainTabView.swift
-ios/AIPlatformApp/Views/Settings/AgentCreatorView.swift
-ios/AIPlatformApp/Views/Settings/ProfileEditSheet.swift
-ios/AIPlatformApp/Views/Settings/SettingsView.swift
-ios/AIPlatformApp/Views/Settings/TokenSummaryCard.swift
-ios/AIPlatformApp/Views/Shared/QuantumAvatarView.swift
-ios/AIPlatformApp/Views/Topology/TopologyCanvasView.swift
-ios/AIPlatformApp/Views/Voice/VoiceInputView.swift
-ios/AIPlatformApp/Views/Workflows/WorkflowDashboardView.swift
-ios/project.yml
-requirements.lock
-scripts/hermes_bridge.py
-tests/test_backend_dependency_contract.py
-tests/test_container_hardening_contract.py
-tests/test_document_presentation.py
-ops/change-manifests/20260912-ios-document-ppt-completion.md
-```
+### Multi-stage Workflow/Hermes verification
 
-## Pending external closure
+- Workflow: `wf_046043a4d2254e86bb323e98d78130c9`
+- Execution: `wfr_1e464188f92b4a6ca7fe74d794c07525`
+- Runtime: Hermes; provider/model receipt reported `openai-codex` / `gpt-5.6-sol`.
+- Outline review approved: artifact `wfa_9d4cdf0141e443f2877ea9fc7e685da0`, SHA-256 `523a9563c31c6d72e6a1740819570e3bec1ca3335f4b3a451508003b58d75a88`, version 1.
+- Design review approved: artifact `wfa_01029fb6ddb041fd9c8d8efc5e837922`, SHA-256 `eb26ebd8c0a5f85fea6e979d0d74e172840655104f422e32b2edc39ce5bcf7fe`, version 1.
+- Final editable PPTX: artifact `wfa_921d6338b2bc4422ad78d1c2720f1a87`, 49,728 bytes, SHA-256 `bdb043f2ea133a2648f3e47e3015a8962d4fdbb571f9d2b7dc3c8215373e8803`.
+- Same-version PDF preview: artifact `wfa_6ef17dff4ffb49c79e162e584d3a4983`, 45,028 bytes, SHA-256 `f43d62721155661dcfab93481389581544283f845e30d1ef085e7c3124aa38d3`.
+- PPTX and PDF were downloaded through authenticated production routes and independently re-hashed to the values above.
+- Final PPTX metadata contained the exact approved design and outline bindings listed above; preview metadata referenced the final PPTX artifact id/hash/version.
+- Output approval returned HTTP 200; final execution state was `completed`, progress 100.
 
-- Push the reviewed commit to GitHub `main`, verify remote SHA, establish a server rollback point, and deploy that exact SHA.
-- Run the signed-in production tenant flow: DOCX/PDF upload, authorization and explicit opt-out variants, outline/design approval, stale/tampered rejection, revision, final review, PPTX/PDF download/hash, and publication separation.
-- Physical-device/TestFlight verification remains separate from local simulator acceptance.
+### Deployment and health
+
+- Exact-SHA deployments used immutable source archives, SHA-256 verification, preloaded linux/amd64 images, image attestations, health gates, and rollback tags.
+- Production was read back at GitHub SHA `67d6f15ed575fa4f3dd561eef81413ea6e1d6238`.
+- API container image label matched that SHA and `/ready` returned `{"status":"ready","version":"0.8.0"}`.
+- Rollback lineage remained available from the previous immutable release; deployment did not delete data volumes.
+
+## Automated and visual verification
+
+- Final focused backend gate on the latest integrated tree: `118 passed`.
+- Final frontend gate: `149 passed`, production Vite build succeeded.
+- Latest integrated iOS Debug Simulator build: `** BUILD SUCCEEDED **`.
+- The built app was installed and launched on simulator `A5005DE7-3D7E-4FA0-A9D9-92967B4A699A` with a real production JWT supplied only through the Debug E2E environment hook.
+- Screenshot `/tmp/ios-document-ppt-final-latest.png` showed authenticated Quantumn UI, fixed light appearance, no visible error banner/clipping, and a real document-to-presentation production run card.
+- An independent read-only review returned `PASS`: approved-outline binding and extracted-text integrity were both closed; its own gates were 41 backend contract tests, 75 workflow projection/API tests, iOS build, frontend light-theme tests, compileall, and `git diff --check`.
+- Production-container LibreOffice rendering and Quick Look visual inspection confirmed Chinese glyphs rendered after adding Noto CJK fonts.
+
+## Evidence boundaries and remaining non-blockers
+
+- The simulator build is not a TestFlight/App Store distribution artifact; no TestFlight upload is claimed in this record.
+- Current text extraction intentionally excludes legacy `.doc` and image-only/scanned PDF OCR. Complex equations and pixel-perfect recreation of arbitrary source graphics remain outside this acceptance scope.
+- The selected local full-suite environment exposed unrelated pre-existing research-deposition integration failures; task-scoped backend, workflow, frontend, container, iOS, and production E2E gates passed. This record does not relabel those unrelated failures as task success.
+- Concurrent unrelated commits and deployments continued during the task. Every task deployment re-read the active SHA and used compare-before-switch checks; the final production SHA is reported separately from the moving GitHub tip.
