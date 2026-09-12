@@ -38,7 +38,7 @@ MAX_PROFESSIONAL_INJECTED_CHARS = 6000
 _INSTALLED = False
 _STATS_LOCK = threading.Lock()
 _WEB_POLICY_LOCK = threading.Lock()
-_WEB_RESEARCH_TURNS: dict[str, int] = {}
+_WEB_RESEARCH_TURNS: dict[str, dict[str, str]] = {}
 _LOCAL_STATE_LOCK = threading.RLock()
 _LOCAL_TURN_STATES: dict[str, dict[str, Any]] = {}
 _GATEWAY_IDENTITIES: dict[tuple[str, str, str], str] = {}
@@ -1635,7 +1635,7 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
         with _WEB_POLICY_LOCK:
             if len(_WEB_RESEARCH_TURNS) >= 512:
                 _WEB_RESEARCH_TURNS.clear()
-            _WEB_RESEARCH_TURNS[turn_key] = 0
+            _WEB_RESEARCH_TURNS.setdefault(turn_key, {})
     marker = _TRIAGE_MARKER_RE.match(user_message or "")
     if marker is not None:
         route_class, agency_enabled = marker.groups()
@@ -1972,21 +1972,27 @@ def _pre_tool_call(
             return {
                 "action": "block",
                 "message": (
-                    "Public-page research must not use terminal/curl. Use web_extract once; "
+                    "Public-page research must not use terminal/curl. Use web_extract for new URLs; "
                     "if it failed, use browser_exec with a real rendered browser, then web_search."
                 ),
             }
-        if tool_name == "web_extract":
-            calls = _WEB_RESEARCH_TURNS[turn_key]
-            if calls >= 1:
+        if effective_tool == "web_extract":
+            states = _WEB_RESEARCH_TURNS[turn_key]
+            urls = effective_args.get("urls", [])
+            if not isinstance(urls, list) or not all(isinstance(u, str) for u in urls):
+                return {"action": "block", "message": "web_extract requires a list of URLs."}
+            blocked = [u for u in urls if states.get(u) in {"pending", "failed"}]
+            if blocked:
                 return {
                     "action": "block",
                     "message": (
-                        "web_extract was already attempted this turn. Do not retry the same "
-                        "backend; use browser_exec with a real rendered browser, then web_search."
+                        "web_extract already pending or failed for these URLs: "
+                        + json.dumps(blocked) + ". Extract other URLs separately; for failed URLs "
+                        "use browser_exec with a real rendered browser, then web_search."
                     ),
                 }
-            _WEB_RESEARCH_TURNS[turn_key] = calls + 1
+            for url in urls:
+                states[url] = "pending"
     return None
 
 
@@ -2018,6 +2024,27 @@ def _post_tool_call(
     **kwargs: Any,
 ) -> None:
     session_id = str(kwargs.get("session_id") or "")
+    effective_tool, effective_args = _effective_local_call(tool_name, args)
+    turn_key = str(kwargs.get("turn_id") or kwargs.get("task_id") or session_id or "")
+    if effective_tool == "web_extract" and kwargs.get("status") != "blocked":
+        try:
+            payload = json.loads(result) if isinstance(result, str) else result
+            rows = payload.get("results", []) if isinstance(payload, dict) else []
+            # Core reconstructs original input order, including errors. Match by
+            # position because redirects legitimately change result.url.
+            successful = {url for url, row in zip(effective_args.get("urls", []), rows)
+                          if isinstance(row, dict) and not row.get("error")
+                          and (row.get("content") or row.get("raw_content"))
+                          and not payload.get("error")}
+        except (TypeError, ValueError):
+            successful = set()
+        with _WEB_POLICY_LOCK:
+            states = _WEB_RESEARCH_TURNS.get(turn_key)
+            if states is not None:
+                for url in effective_args.get("urls", []):
+                    if states.get(url) == "pending":
+                        # Content stays in Hermes' existing core cache, never here.
+                        states[url] = "success" if url in successful else "failed"
     attestation = _bind_publication_review_write(tool_name, args, result, session_id)
     if attestation:
         with _LOCAL_STATE_LOCK:

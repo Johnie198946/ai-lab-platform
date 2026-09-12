@@ -437,6 +437,36 @@ def test_link_research_blocks_terminal_and_duplicate_extract():
     assert terminal and terminal["action"] == "block"
 
 
+def test_link_research_per_url_outcomes_and_wrapped_entry():
+    router = load_capability_router()
+    scope = {"turn_id": "synthetic-web-batch"}
+    router._pre_llm_call("研究 https://example.org/first", **scope)
+    first, failed, fresh = ["https://example.org/" + x for x in ("first", "failed", "fresh")]
+    args = {"urls": [first, failed]}
+    wrapped = {"name": "web_extract", "arguments": json.dumps(args)}
+    assert router._pre_tool_call("tool_call", wrapped, **scope) is None
+    # pre_llm runs repeatedly within a turn; it must not reset pending/failure state.
+    router._pre_llm_call("研究 https://example.org/first", **scope)
+    assert router._pre_tool_call("web_extract", args, **scope)["action"] == "block"
+    router._post_tool_call("tool_call", wrapped, json.dumps({"results": [
+        {"url": "https://example.org/redirected", "content": "Synthetic evidence"},
+        {"url": failed, "error": "HTTP error: 429"},
+    ]}), **scope)
+    assert router._pre_tool_call("web_extract", {"urls": [first, fresh]}, **scope) is None
+    router._post_tool_call("web_extract", {"urls": [first, fresh]}, json.dumps({"results": [
+        {"url": first, "content": "Core cached content"},
+        {"url": fresh, "content": "New evidence"},
+    ]}), **scope)
+    assert router._pre_tool_call("tool_call", {"name": "web_extract", "arguments": {"urls": [failed]}}, **scope)["action"] == "block"
+    assert router._pre_tool_call("web_extract", {"urls": [fresh]}, **scope) is None
+    # Missing/unparseable results consume only their URL's one failed attempt.
+    router._post_tool_call("web_extract", {"urls": [fresh]}, "[TOOL_ERROR] unavailable", **scope)
+    assert router._pre_tool_call("web_extract", {"urls": [fresh]}, **scope)["action"] == "block"
+    assert router._pre_tool_call("web_extract", {"urls": ["https://example.org/another"]}, **scope) is None
+    router._pre_llm_call("研究 https://example.org/failed", turn_id="synthetic-next-turn")
+    assert router._pre_tool_call("web_extract", {"urls": [failed]}, turn_id="synthetic-next-turn") is None
+
+
 def test_link_research_allows_only_single_local_sha256_terminal_command():
     router = load_capability_router()
     router._WEB_RESEARCH_TURNS.clear()
