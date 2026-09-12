@@ -43,6 +43,7 @@
 		8D079F9379B3A042072C1F6E /* ChatResponseRecoveryRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B736F9BD0E2F1D7CAAC12DEF /* ChatResponseRecoveryRegressionTests.swift */; };
 		A080A729E179FA79032A414E /* SessionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC763B7972BB3B1AF533EB4 /* SessionDrawerSheet.swift */; };
 		A90220533C07201C3B17C5B6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C3999D4D79E502B3827976F /* SettingsView.swift */; };
+		A11111111111111111111111 /* MemoryCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A22222222222222222222222 /* MemoryCenterView.swift */; };
 		AF3FBBCFB0CCECD37F56C829 /* AgentCreatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BB3C5ED04BDD0018FB3421 /* AgentCreatorView.swift */; };
 		B11A605E5DA136F4CEC7F3C3 /* ReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8895E27447B9A9076EB1D59 /* ReasoningCard.swift */; };
 		BF6487D4B02C2A259642AFD4 /* AttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */; };
@@ -96,6 +97,7 @@
 		649C465782634364AD5E28C2 /* TenantSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TenantSessionCoordinator.swift; sourceTree = "<group>"; };
 		682708AC3F789E460269179F /* ChatHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
 		6C3999D4D79E502B3827976F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A22222222222222222222222 /* MemoryCenterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryCenterView.swift; sourceTree = "<group>"; };
 		77831964D4BC5807CFED21D0 /* ProfileEditSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditSheet.swift; sourceTree = "<group>"; };
 		7A0179B18110033BC1CA0851 /* QuantumAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuantumAvatarView.swift; sourceTree = "<group>"; };
 		7CE0824746D5B06C3C2B035E /* AIPlatformApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AIPlatformApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -179,6 +181,7 @@
 			isa = PBXGroup;
 			children = (
 				F1BB3C5ED04BDD0018FB3421 /* AgentCreatorView.swift */,
+				A22222222222222222222222 /* MemoryCenterView.swift */,
 				77831964D4BC5807CFED21D0 /* ProfileEditSheet.swift */,
 				6C3999D4D79E502B3827976F /* SettingsView.swift */,
 				CF013F7A1E943E1DB704B2C0 /* TokenSummaryCard.swift */,
@@ -522,6 +525,7 @@
 				1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */,
 				8A5A9BA341A670FC81416FDE /* MarkdownCards.swift in Sources */,
 				85D4C80001C8700309C59875 /* MessageBubbleView.swift in Sources */,
+				A11111111111111111111111 /* MemoryCenterView.swift in Sources */,
 				CA2644A033D838AAF6B53339 /* PluginRenderContext.swift in Sources */,
 				3FFEAF19DF3D4DE1A028D6F0 /* PlusMenuSheet.swift in Sources */,
 				D5E5539813EF231D57471760 /* ProfileEditSheet.swift in Sources */,
@@ -598,7 +602,7 @@
 				CODE_SIGN_ENTITLEMENTS = AIPlatformApp/AIPlatformApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_TEAM = AALA948YY5;
 				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -727,7 +731,7 @@
 				CODE_SIGN_ENTITLEMENTS = AIPlatformApp/AIPlatformApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_TEAM = AALA948YY5;
 				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

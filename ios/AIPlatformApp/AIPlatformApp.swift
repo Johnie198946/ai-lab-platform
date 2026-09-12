@@ -64,6 +64,7 @@ public struct AIPlatformApp: App {
                 .environmentObject(apiClient)
                 .environmentObject(workflowActivities)
                 .environmentObject(sessionManager)
+                .preferredColorScheme(.light)
         }
     }
 }

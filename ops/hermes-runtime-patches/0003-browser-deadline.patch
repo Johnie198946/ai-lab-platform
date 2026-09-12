@@ -1,0 +1,2940 @@
+diff --git a/hermes_cli/browser_connect.py b/hermes_cli/browser_connect.py
+index 558f59a342321ef0cd20ce2eb07115541ac435c3..7fc07e61f2dca119909eca141affac764ac50dc7 100644
+--- a/hermes_cli/browser_connect.py
++++ b/hermes_cli/browser_connect.py
+@@ -12,6 +12,7 @@ import shlex
+ import shutil
+ import subprocess
+ import time
++from contextlib import contextmanager
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ 
+@@ -20,6 +21,39 @@ from hermes_constants import get_hermes_home
+ logger = logging.getLogger(__name__)
+ 
+ 
++class BrowserDeadlineExpired(TimeoutError):
++    """The caller's shared browser budget was exhausted (not a socket timeout)."""
++
++
++def browser_remaining(deadline: float | None, stage: str, cap: float | None = None):
++    """Remaining monotonic budget; None preserves legacy per-operation limits.
++
++    Cooperative at synchronous I/O boundaries, NOT a thread-based hard timeout.
++    DNS, config/plugin I/O, process creation/reaping and result encoding may
++    overrun; callers check again before the next side effect. Socket timeouts
++    bound individual waits, not trickling responses or OS name resolution.
++    """
++    if deadline is None:
++        return cap
++    remaining = deadline - time.monotonic()
++    if remaining <= 0:
++        raise BrowserDeadlineExpired(f"browser-use timed out during {stage}")
++    return min(remaining, cap) if cap is not None else remaining
++
++
++@contextmanager
++def browser_deadline_lock(lock, deadline: float | None, stage: str):
++    if deadline is None:
++        lock.acquire()
++    elif not lock.acquire(timeout=browser_remaining(deadline, stage)):
++        raise BrowserDeadlineExpired(f"browser-use timed out during {stage}")
++    try:
++        browser_remaining(deadline, stage)
++        yield
++    finally:
++        lock.release()
++
++
+ DEFAULT_BROWSER_CDP_PORT = 9222
+ DEFAULT_BROWSER_CDP_URL = f"http://127.0.0.1:{DEFAULT_BROWSER_CDP_PORT}"
+ 
+@@ -427,7 +461,7 @@ def _launchservices_https_handler(dump: str) -> str | None:
+     return None
+ 
+ 
+-def _detect_default_darwin() -> str | None:
++def _detect_default_darwin(*, deadline: float | None = None) -> str | None:
+     try:
+         out = subprocess.run(
+             list(_LS_HANDLERS_READER),
+@@ -435,8 +469,11 @@ def _detect_default_darwin() -> str | None:
+             text=True,
+             encoding="utf-8",
+             errors="replace",
+-            timeout=5,
++            timeout=browser_remaining(deadline, "default-browser detection", 5),
+         ).stdout
++        browser_remaining(deadline, "default-browser detection")
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         return None
+     bundle = _launchservices_https_handler(out)
+@@ -455,7 +492,7 @@ def _detect_default_darwin() -> str | None:
+     return None
+ 
+ 
+-def _detect_default_linux() -> str | None:
++def _detect_default_linux(*, deadline: float | None = None) -> str | None:
+     try:
+         out = subprocess.run(
+             ["xdg-settings", "get", "default-web-browser"],
+@@ -463,8 +500,11 @@ def _detect_default_linux() -> str | None:
+             text=True,
+             encoding="utf-8",
+             errors="replace",
+-            timeout=5,
++            timeout=browser_remaining(deadline, "default-browser detection", 5),
+         ).stdout.strip().lower()
++        browser_remaining(deadline, "default-browser detection")
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         out = ""
+     # Channels first: ``google-chrome-beta.desktop`` contains the stable
+@@ -479,7 +519,7 @@ def _detect_default_linux() -> str | None:
+     return None
+ 
+ 
+-def detect_default_chromium(system: str | None = None) -> str | None:
++def detect_default_chromium(system: str | None = None, *, deadline: float | None = None) -> str | None:
+     """Return the canonical key of the default Chromium browser, or None.
+ 
+     None means the default browser is non-Chromium (Firefox, Safari) or could
+@@ -489,8 +529,8 @@ def detect_default_chromium(system: str | None = None) -> str | None:
+     if system == "Windows":
+         return _detect_default_windows()
+     if system == "Darwin":
+-        return _detect_default_darwin()
+-    return _detect_default_linux()
++        return _detect_default_darwin(**({"deadline": deadline} if deadline is not None else {}))
++    return _detect_default_linux(**({"deadline": deadline} if deadline is not None else {}))
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -919,7 +959,7 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
+     )
+ 
+ 
+-def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
++def snapshot_real_profile(browser: str, src: str | None = None, *, deadline: float | None = None) -> tuple[str | None, str | None]:
+     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir.
+ 
+     Copies only what the launched browser needs: the user-data-dir's
+@@ -938,6 +978,39 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
+ 
+     Returns ``(copy_dir, None)`` on success, ``(None, error)`` on failure.
+     """
++    if deadline is not None:
++        # SQLite backup can wait indefinitely despite its busy timeout. Run
++        # the SAME copier in a disposable child, not an abandoned IO thread.
++        # No browser is launched/closed here. Pin the active Hermes home so
++        # profile-local config/consent/pin and secret-store policy are retained.
++        import json
++        import sys
++
++        browser_remaining(deadline, "profile snapshot")
++        env = dict(os.environ, HERMES_HOME=str(get_hermes_home()))
++        env.pop("PYTHONHOME", None)
++        env.pop("PYTHONPATH", None)
++        worker = (
++            "import json, os, sys; os.umask(0o077); "
++            "from hermes_cli.browser_connect import snapshot_real_profile; "
++            "print(json.dumps(snapshot_real_profile(*json.loads(sys.argv[1]))))"
++        )
++        try:
++            result = subprocess.run(
++                [sys.executable, "-c", worker, json.dumps([browser, src])],
++                cwd=str(Path(__file__).resolve().parent.parent), env=env,
++                capture_output=True, text=True,
++                timeout=browser_remaining(deadline, "profile snapshot"),
++            )
++        except subprocess.TimeoutExpired as exc:
++            # subprocess.run kills and REAPS this child before raising. No
++            # descendants or live browser belong to this snapshot worker.
++            raise BrowserDeadlineExpired("browser-use timed out during profile snapshot") from exc
++        browser_remaining(deadline, "profile snapshot")
++        if result.returncode:
++            return None, "real-profile snapshot worker failed (no browser launched)"
++        return tuple(json.loads(result.stdout))
++
+     src = src or real_profile_data_dir(browser)
+     if not src or not os.path.isdir(src):
+         return None, (
+@@ -984,6 +1057,9 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
+     # copy poisons freshness forever and only ever gets auth overlays.
+     populated = os.path.isfile(marker)
+     try:
++        # An interrupted REFRESH must not leave an old completion marker.
++        if populated:
++            os.unlink(marker)
+         os.makedirs(dst, exist_ok=True)
+         # Secure the snapshot dir AND its browser-profile parent on EVERY
+         # launch: a failed first attempt or an older-build dir must still
+@@ -1178,7 +1254,7 @@ def _chrome_debug_args(port: int) -> list[str]:
+     ]
+ 
+ 
+-def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
++def is_browser_debug_ready(url: str, timeout: float = 1.0, *, deadline: float | None = None) -> bool:
+     """Return True when ``url`` exposes a reachable Chrome DevTools endpoint."""
+     import socket
+     import urllib.request
+@@ -1194,8 +1270,11 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
+         if not parsed.hostname:
+             return False
+         try:
+-            with socket.create_connection((parsed.hostname, port), timeout=timeout):
++            with socket.create_connection((parsed.hostname, port), timeout=browser_remaining(deadline, "CDP probe", timeout)):
+                 return True
++        except TimeoutError:
++            browser_remaining(deadline, "CDP probe")
++            return False
+         except OSError:
+             return False
+ 
+@@ -1206,10 +1285,12 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
+     root = f"{scheme}://{parsed.netloc}".rstrip("/")
+     for probe in (f"{root}/json/version", f"{root}/json"):
+         try:
+-            with urllib.request.urlopen(probe, timeout=timeout) as resp:
++            with urllib.request.urlopen(probe, timeout=browser_remaining(deadline, "CDP probe", timeout)) as resp:
++                browser_remaining(deadline, "CDP probe")
+                 if 200 <= getattr(resp, "status", 200) < 300:
+                     return True
+         except Exception:
++            browser_remaining(deadline, "CDP probe")
+             continue
+     return False
+ 
+diff --git a/hermes_cli/dep_ensure.py b/hermes_cli/dep_ensure.py
+index a3fbf51bae939986412a9a0c8dc2fd9ca2599e10..97ef93bd599eea66a257ff62e85bcaa492e15459 100644
+--- a/hermes_cli/dep_ensure.py
++++ b/hermes_cli/dep_ensure.py
+@@ -15,6 +15,7 @@ browser tool needs agent-browser).
+ """
+ from __future__ import annotations
+ 
++import os
+ import platform
+ import shutil
+ import subprocess
+@@ -31,11 +32,11 @@ _DEP_CHECKS = {
+     # not on PATH, so which() would report Node missing on an install that has
+     # a managed one and trigger a redundant re-install.
+     "node": lambda: find_node_executable("node") is not None,
+-    "browser": lambda: (
+-        agent_browser_runnable(shutil.which("agent-browser"))
++    "browser": lambda **kw: (
++        agent_browser_runnable(shutil.which("agent-browser"), **kw)
+         or _has_system_browser()
+         or _has_hermes_agent_browser()
+-        or _has_npx_agent_browser()
++        or _has_npx_agent_browser(**kw)
+     ),
+     "ripgrep": lambda: shutil.which("rg") is not None,
+     "ffmpeg": lambda: shutil.which("ffmpeg") is not None,
+@@ -60,18 +61,21 @@ def _has_system_browser() -> bool:
+     return False
+ 
+ 
+-def _has_npx_agent_browser() -> bool:
++def _has_npx_agent_browser(*, deadline: float | None = None) -> bool:
+     """agent-browser resolves lazily via npx on the default install (#43564),
+     invisible to the PATH/managed-dir probes above. Mirror
+     tools.browser_tool.check_browser_requirements's Termux carve-out so this
+     check can't diverge from what browser tools actually find."""
++    from hermes_cli.browser_connect import BrowserDeadlineExpired
+     try:
+         from tools.browser_tool import (
+             _find_agent_browser,
+             _is_npx_agent_browser_sentinel,
+             _requires_real_termux_browser_install,
+         )
+-        browser_cmd = _find_agent_browser(validate=False)
++        browser_cmd = _find_agent_browser(validate=False, **({"deadline": deadline} if deadline is not None else {}))
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         return False
+     if not _is_npx_agent_browser_sentinel(browser_cmd):
+@@ -128,13 +132,21 @@ def _find_install_script(
+ def ensure_dependency(
+     dep: str,
+     interactive: bool = True,
++    *, deadline: float | None = None,
+ ) -> bool:
+     """Ensure a non-Python dependency is available. Returns True if available."""
+     check = _DEP_CHECKS.get(dep)
+     if check is None:
+         # Unknown dep — don't silently forward to install script.
+         return False
+-    if check():
++    check_kw = {"deadline": deadline} if dep == "browser" and deadline is not None else {}
++    if deadline is not None:
++        from hermes_cli.browser_connect import browser_remaining
++        browser_remaining(deadline, "dependency detection")
++    available = check(**check_kw)
++    if deadline is not None:
++        browser_remaining(deadline, "dependency detection")
++    if available:
+         return True
+ 
+     script, shell = _find_install_script()
+@@ -173,13 +185,37 @@ def ensure_dependency(
+ 
+     run_env = hermes_subprocess_env(inherit_credentials=False)
+     run_env["IS_INTERACTIVE"] = "false"
+-    result = subprocess.run(
+-        cmd,
+-        env=run_env,
+-    )
+-    if result.returncode != 0:
++    if deadline is None:
++        result = subprocess.run(cmd, env=run_env)
++        returncode = result.returncode
++    else:
++        # Browser resolver callers share one budget with install/start/exec.
++        # Preserve the existing confirmation above; never abandon an installer
++        # thread that can continue modifying the managed tree after timeout.
++        from hermes_cli.browser_connect import BrowserDeadlineExpired, browser_remaining
++        from agent.deadline import kill_process_tree
++
++        browser_remaining(deadline, "browser dependency bootstrap")
++        spawn_flags = ({"start_new_session": True} if os.name == "posix" else
++                       {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)})
++        proc = subprocess.Popen(cmd, env=run_env, **spawn_flags)
++        try:
++            returncode = proc.wait(timeout=browser_remaining(deadline, "browser dependency bootstrap"))
++        except (subprocess.TimeoutExpired, BrowserDeadlineExpired) as exc:
++            kill_process_tree(proc.pid)
++            # Reaping is cleanup, not a fresh execution budget. It can exceed
++            # the deadline; OS process creation and uninterruptible IO cannot
++            # be made hard-cancellable from portable Python.
++            proc.wait(timeout=5)
++            raise BrowserDeadlineExpired("browser-use timed out during browser dependency bootstrap") from exc
++    if returncode != 0:
+         return False
+ 
++    if deadline is not None:
++        browser_remaining(deadline, "dependency verification")
+     if check:
+-        return check()
++        available = check(**check_kw)
++        if deadline is not None:
++            browser_remaining(deadline, "dependency verification")
++        return available
+     return True
+diff --git a/hermes_constants.py b/hermes_constants.py
+index 3032ea1ad125aca12faba782429595f69e88b73f..fb7d33a0363fb2a750d70f0b47b62323e57be2c1 100644
+--- a/hermes_constants.py
++++ b/hermes_constants.py
+@@ -499,7 +499,7 @@ _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "
+ _INSTALL_ROOT = Path(__file__).resolve().parent
+ 
+ 
+-def node_tool_runnable(path: str | None) -> bool:
++def node_tool_runnable(path: str | None, *, deadline: float | None = None) -> bool:
+     """Return True only when *path* is a Node/npm/npx binary that actually runs.
+ 
+     Hermes-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
+@@ -522,6 +522,7 @@ def node_tool_runnable(path: str | None) -> bool:
+         return False
+ 
+     import subprocess
++    from hermes_cli.browser_connect import BrowserDeadlineExpired, browser_remaining
+ 
+     try:
+         from hermes_cli._subprocess_compat import windows_hide_flags
+@@ -529,12 +530,16 @@ def node_tool_runnable(path: str | None) -> bool:
+         result = subprocess.run(
+             [path, "--version"],
+             capture_output=True,
+-            timeout=10,
+             env=with_hermes_node_path(),
+             creationflags=windows_hide_flags(),
++            timeout=browser_remaining(deadline, "executable version probe", 10),
+         )
++    except BrowserDeadlineExpired:
++        raise
+     except (OSError, subprocess.TimeoutExpired, ValueError):
++        browser_remaining(deadline, "executable version probe")
+         return False
++    browser_remaining(deadline, "executable version probe")
+     return result.returncode == 0
+ 
+ 
+@@ -1049,7 +1054,7 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
+     return merged
+ 
+ 
+-def agent_browser_runnable(path: str | None) -> bool:
++def agent_browser_runnable(path: str | None, *, deadline: float | None = None) -> bool:
+     """Return True only when *path* is an agent-browser CLI that actually runs.
+ 
+     A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
+@@ -1081,6 +1086,7 @@ def agent_browser_runnable(path: str | None) -> bool:
+     if not os.path.exists(path) or not os.access(path, os.X_OK):
+         return False
+     import subprocess
++    from hermes_cli.browser_connect import BrowserDeadlineExpired, browser_remaining
+ 
+     try:
+         from hermes_cli._subprocess_compat import windows_hide_flags
+@@ -1088,12 +1094,16 @@ def agent_browser_runnable(path: str | None) -> bool:
+         result = subprocess.run(
+             [path, "--version"],
+             capture_output=True,
+-            timeout=10,
+             env=with_hermes_node_path(),
+             creationflags=windows_hide_flags(),
++            timeout=browser_remaining(deadline, "executable version probe", 10),
+         )
++    except BrowserDeadlineExpired:
++        raise
+     except (OSError, subprocess.TimeoutExpired, ValueError):
++        browser_remaining(deadline, "executable version probe")
+         return False
++    browser_remaining(deadline, "executable version probe")
+     return result.returncode == 0
+ 
+ 
+diff --git a/tests/tools/test_browser_exec_deadline.py b/tests/tools/test_browser_exec_deadline.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e9587267bf763e60babd97fcc7562ae7a4d2d1ec
+--- /dev/null
++++ b/tests/tools/test_browser_exec_deadline.py
+@@ -0,0 +1,478 @@
++"""Resolver budgets using synthetic profiles/processes only; never a host browser."""
++import json
++import os
++import subprocess
++import threading
++import time
++from types import SimpleNamespace
++from unittest.mock import Mock
++
++import pytest
++
++import hermes_cli.browser_connect as bc
++import tools.browser_tool as bt
++import tools.browser_use_cli as bu
++
++
++@pytest.fixture
++def clock(monkeypatch):
++    now = [100.0]
++    monkeypatch.setattr(time, "monotonic", lambda: now[0])
++    return now
++
++
++@pytest.fixture
++def exec_stubs(monkeypatch):
++    monkeypatch.setattr(bu, "_blocked_url_in_code", lambda code: None)
++    monkeypatch.setattr(bu, "_find_cli", lambda: ["synthetic-browser-use"])
++    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: {})
++    monkeypatch.setattr(bu, "_read_browser_cfg", lambda: {})
++    monkeypatch.setattr(bu, "_workspace_dir", lambda task: None)
++    monkeypatch.setattr(bu, "_resolve_real_profile_cdp", lambda *a, **kw: None)
++    monkeypatch.setattr(bu, "_resolve_backend_cdp", lambda *a, **kw: None)
++    run = Mock(return_value=SimpleNamespace(returncode=0, stdout="ok", stderr=""))
++    monkeypatch.setattr(bu.subprocess, "run", run)
++    return run
++
++
++@pytest.mark.parametrize("timeout, expected", [(35, 35), (None, 300), ("bad", 300), (1, 5), (9000, 1800)])
++def test_single_budget_and_legacy_normalization(monkeypatch, clock, exec_stubs, timeout, expected):
++    seen = []
++
++    def resolve(*args, deadline, **kwargs):
++        seen.append(deadline)
++        clock[0] += 1
++
++    monkeypatch.setattr(bu, "_resolve_real_profile_cdp", resolve)
++    monkeypatch.setattr(bu, "_resolve_backend_cdp", resolve)
++    result = json.loads(bu.browser_exec("print(1)", timeout_s=timeout))
++    assert result["success"]
++    assert seen == [100 + expected, 100 + expected]
++    assert exec_stubs.call_args.kwargs["timeout"] == expected - 2
++
++
++@pytest.mark.parametrize("stage", ["_blocked_url_in_code", "_resolve_real_profile_cdp", "_resolve_backend_cdp", "_workspace_dir"])
++def test_no_cli_after_cooperative_io_overruns(monkeypatch, clock, exec_stubs, stage):
++    def delayed(*args, **kwargs):
++        clock[0] += 36
++        return None
++
++    monkeypatch.setattr(bu, stage, delayed)
++    result = json.loads(bu.browser_exec("print(1)", timeout_s=35))
++    assert "timed out" in result["error"]
++    exec_stubs.assert_not_called()
++
++
++def test_policy_rejection_still_precedes_resolvers(monkeypatch, exec_stubs):
++    monkeypatch.setattr(bu, "_blocked_url_in_code", lambda code: "website access denied")
++    resolve = Mock()
++    monkeypatch.setattr(bu, "_resolve_real_profile_cdp", resolve)
++    assert "website access denied" in json.loads(bu.browser_exec("print(1)"))["error"]
++    resolve.assert_not_called()
++    exec_stubs.assert_not_called()
++
++
++def test_no_local_without_consent(monkeypatch, exec_stubs):
++    monkeypatch.setattr(bu, "_real_profile_consented", lambda: False)
++    assert "use_real_profile is off" in json.loads(bu.browser_exec("print(1)", local=True))["error"]
++    exec_stubs.assert_not_called()
++
++
++@pytest.mark.parametrize("target, invoke", [
++    ("_real_profile_cdp_lock", lambda d: bt._real_profile_cdp(deadline=d)),
++    ("_cloud_provider_cache_lock", lambda d: bt._get_cloud_provider(deadline=d)),
++    ("_cleanup_lock", lambda d: bt._get_session_info("synthetic", deadline=d)),
++])
++def test_contended_locks_use_remaining_budget(monkeypatch, target, invoke):
++    lock = threading.Lock()
++    monkeypatch.setattr(bt, target, lock)
++    monkeypatch.setattr(bt, "_use_real_profile", lambda: True)
++    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: False)
++    detect = Mock(side_effect=AssertionError("must not probe behind lock"))
++    monkeypatch.setattr(bc, "detect_default_chromium", detect)
++    lock.acquire()
++    started = time.monotonic()
++    try:
++        with pytest.raises(TimeoutError, match="lock"):
++            invoke(started + 0.03)
++        assert time.monotonic() - started < 1
++        assert lock.locked()  # not acquired/released by timed-out caller
++        detect.assert_not_called()
++    finally:
++        lock.release()
++
++
++def test_lock_released_after_stage_failure():
++    lock = threading.Lock()
++    with pytest.raises(RuntimeError):
++        with bc.browser_deadline_lock(lock, time.monotonic() + 1, "test lock"):
++            raise RuntimeError("synthetic stage failure")
++    assert not lock.locked()
++
++
++@pytest.fixture
++def real_profile_stubs(monkeypatch, tmp_path):
++    monkeypatch.setattr(bt, "_real_profile_cdp_cache", {})
++    monkeypatch.setattr(bt, "_real_profile_chrome_procs", [])
++    monkeypatch.setattr(bt, "_real_profile_cdp_lock", threading.Lock())
++    monkeypatch.setattr(bt, "_use_real_profile", lambda: True)
++    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: False)
++    monkeypatch.setattr(bt, "_is_headed_mode", lambda: False)
++    monkeypatch.setattr(bt, "_find_agent_browser", lambda **kw: "synthetic-agent-browser")
++    monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
++    monkeypatch.setattr(bc, "detect_default_chromium", lambda **kw: "chrome")
++    monkeypatch.setattr(bc, "real_profile_copy_dir", lambda browser: str(tmp_path))
++    monkeypatch.setattr(bc, "snapshot_real_profile", lambda browser, **kw: (str(tmp_path), None))
++    monkeypatch.setattr(bc, "chromium_executable", lambda browser: "synthetic-chrome")
++    monkeypatch.setattr(bt, "_agent_browser_get_cdp", Mock(side_effect=[None, "http://127.0.0.1:9999"]))
++    chrome = Mock()
++    chrome.poll.return_value = None
++
++    def popen(*args, **kwargs):
++        (tmp_path / "DevToolsActivePort").write_text("9999\n/devtools/browser/synthetic\n")
++        return chrome
++
++    launch = Mock(side_effect=popen)
++    monkeypatch.setattr(bt.subprocess, "Popen", launch)
++    run = Mock(return_value=SimpleNamespace(returncode=0, stdout="", stderr=""))
++    monkeypatch.setattr(bt.subprocess, "run", run)
++    kill = Mock()
++    monkeypatch.setattr(bt, "_kill_process_tree", kill)
++    return SimpleNamespace(launch=launch, run=run, chrome=chrome, kill=kill)
++
++
++@pytest.mark.parametrize("stage", ["detect_default_chromium", "snapshot_real_profile", "chromium_executable"])
++def test_prelaunch_stage_overrun_fails_closed(monkeypatch, clock, real_profile_stubs, tmp_path, stage):
++    def delayed(*args, **kwargs):
++        clock[0] = 136
++        return (str(tmp_path), None) if stage == "snapshot_real_profile" else "chrome"
++
++    monkeypatch.setattr(bc, stage, delayed)
++    with pytest.raises(TimeoutError):
++        bt._real_profile_cdp(deadline=135)
++    real_profile_stubs.launch.assert_not_called()
++    assert not bt._real_profile_cdp_lock.locked()
++
++
++def test_real_profile_forwards_same_deadline_and_attach_remainder(monkeypatch, clock, real_profile_stubs, tmp_path):
++    seen = []
++
++    def snapshot(browser, deadline):
++        seen.append(deadline)
++        clock[0] += 12
++        return str(tmp_path), None
++
++    monkeypatch.setattr(bc, "snapshot_real_profile", snapshot)
++    assert bt._real_profile_cdp(deadline=135) == ("http://127.0.0.1:9999", None)
++    assert seen == [135]
++    assert real_profile_stubs.run.call_args.kwargs["timeout"] == 23
++    real_profile_stubs.kill.assert_not_called()
++
++
++@pytest.mark.parametrize("stage", ["startup", "attach_timeout", "attach_failure", "endpoint"])
++def test_new_copy_browser_reaped_on_failure_only(monkeypatch, clock, real_profile_stubs, tmp_path, stage):
++    st = real_profile_stubs
++    earlier = object()
++    bt._real_profile_chrome_procs.append(earlier)
++    if stage == "startup":
++        def late_launch(*a, **kw):
++            clock[0] = 136
++            return st.chrome
++        st.launch.side_effect = late_launch
++    elif stage == "attach_timeout":
++        st.run.side_effect = subprocess.TimeoutExpired("synthetic", 23)
++    elif stage == "attach_failure":
++        st.run.return_value.returncode = 1
++    else:
++        bt._agent_browser_get_cdp.side_effect = [None, None]
++    try:
++        cdp, err = bt._real_profile_cdp(deadline=135)
++        assert cdp is None and err
++    except TimeoutError:
++        assert stage == "startup"
++    st.kill.assert_called_once_with(st.chrome)
++    st.chrome.wait.assert_called_once_with(timeout=5)
++    assert bt._real_profile_chrome_procs == [earlier]
++    assert not bt._real_profile_cdp_cache
++    assert not bt._real_profile_cdp_lock.locked()
++
++
++def test_cached_real_profile_does_not_snapshot_or_close(monkeypatch, real_profile_stubs):
++    bt._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9999"
++    probe = Mock(return_value=True)
++    monkeypatch.setattr(bt, "_cdp_http_ready", probe)
++    deadline = time.monotonic() + 35
++    assert bt._real_profile_cdp(deadline=deadline)[0] == "http://127.0.0.1:9999"
++    probe.assert_called_once_with("http://127.0.0.1:9999", deadline=deadline)
++    real_profile_stubs.launch.assert_not_called()
++    real_profile_stubs.kill.assert_not_called()
++
++
++def test_cdp_probes_do_not_restart_budget(monkeypatch, clock):
++    import urllib.request
++    seen = []
++
++    def probe(url, timeout):
++        seen.append(timeout)
++        clock[0] += 0.6
++        raise OSError("synthetic offline")
++
++    monkeypatch.setattr(urllib.request, "urlopen", probe)
++    with pytest.raises(TimeoutError, match="CDP probe"):
++        bc.is_browser_debug_ready("http://127.0.0.1:1", deadline=101)
++    assert seen == pytest.approx([1.0, 0.4])
++
++
++def _synthetic_profile(tmp_path):
++    src = tmp_path / "source"
++    for profile in ("Default", "Profile 2"):
++        (src / profile).mkdir(parents=True)
++        (src / profile / "Preferences").write_text(json.dumps({"synthetic_identity": profile}))
++    (src / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
++    return src
++
++
++def test_snapshot_child_uses_same_copier_and_profile_pin(tmp_path, monkeypatch):
++    src = _synthetic_profile(tmp_path)
++    home = tmp_path / "child-home"
++    home.mkdir()
++    (home / "config.yaml").write_text('browser:\n  use_real_profile: true\n  real_profile_pin: "Profile 2"\n')
++    monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
++    dst, err = bc.snapshot_real_profile("chrome", str(src), deadline=time.monotonic() + 15)
++    assert err is None
++    from pathlib import Path
++    assert Path(dst) == home / "browser-profile" / "chrome"
++    assert json.loads((Path(dst) / "Default" / "Preferences").read_text())["synthetic_identity"] == "Profile 2"
++    assert (Path(dst) / bc._SNAPSHOT_DONE_MARKER).read_text() == "Profile 2"
++    assert (Path(dst) / "Default" / "Preferences").stat().st_mode & 0o077 == 0
++    (home / "config.yaml").write_text('browser:\n  real_profile_pin: "missing"\n')
++    dst, err = bc.snapshot_real_profile("chrome", str(src), deadline=time.monotonic() + 15)
++    assert dst is None and "real_profile_pin" in err
++
++
++def test_snapshot_timeout_reaps_real_child(monkeypatch, tmp_path):
++    """Real process cancellation, not a mocked TimeoutExpired or IO thread."""
++    real_run = subprocess.run
++    children = []
++    real_popen = subprocess.Popen
++
++    def record_child(*args, **kwargs):
++        proc = real_popen(*args, **kwargs)
++        children.append(proc)
++        return proc
++
++    def slow_worker(argv, **kwargs):
++        argv = list(argv)
++        # Synthetic blocking IO surrogate before any profile reads/writes.
++        argv[2] = "import time; time.sleep(60); " + argv[2]
++        return real_run(argv, **kwargs)
++
++    monkeypatch.setattr(subprocess, "Popen", record_child)
++    monkeypatch.setattr(subprocess, "run", slow_worker)
++    monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "child-home")
++    started = time.monotonic()
++    with pytest.raises(TimeoutError, match="profile snapshot"):
++        bc.snapshot_real_profile("chrome", str(tmp_path / "synthetic"), deadline=started + 0.1)
++    assert time.monotonic() - started < 2
++    assert len(children) == 1
++    assert children[0].poll() is not None
++    assert not (tmp_path / "child-home" / "browser-profile").exists()
++
++
++def test_interrupted_refresh_invalidates_old_completion_marker(tmp_path, monkeypatch):
++    src = _synthetic_profile(tmp_path)
++    monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "home")
++    dst, err = bc.snapshot_real_profile("chrome", str(src))
++    assert err is None
++    monkeypatch.setattr(bc, "_mirror_profile_auth", Mock(side_effect=RuntimeError("synthetic interrupted refresh")))
++    with pytest.raises(RuntimeError):
++        bc.snapshot_real_profile("chrome", str(src))
++    assert not os.path.exists(os.path.join(dst, bc._SNAPSHOT_DONE_MARKER))
++
++
++def test_late_provider_result_reclaimed_without_local_fallback(monkeypatch, clock):
++    monkeypatch.setattr(bt, "_active_sessions", {})
++    monkeypatch.setattr(bt, "_cleanup_lock", threading.Lock())
++    monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda **kw: None)
++    monkeypatch.setattr(bt, "_update_session_activity", lambda *a, **kw: None)
++    monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++    provider = Mock()
++    def create(task):
++        clock[0] = 136
++        return {"session_name": "synthetic", "bb_session_id": "synthetic-id", "cdp_url": "wss://synthetic/devtools/browser/x"}
++    provider.create_session.side_effect = create
++    monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: provider)
++    fallback = Mock(side_effect=AssertionError("no local fallback after deadline"))
++    monkeypatch.setattr(bt, "_create_local_session", fallback)
++    with pytest.raises(TimeoutError, match="provider create_session"):
++        bt._get_session_info("synthetic", deadline=135)
++    provider.close_session.assert_called_once_with("synthetic-id")
++    fallback.assert_not_called()
++    assert not bt._active_sessions
++
++
++def test_cli_residual_below_default_floor_not_inflated(monkeypatch, clock, exec_stubs):
++    def resolve(*a, **kw):
++        clock[0] = 134.75
++    monkeypatch.setattr(bu, "_resolve_real_profile_cdp", resolve)
++    assert json.loads(bu.browser_exec("print(1)", timeout_s=35))["success"]
++    assert exec_stubs.call_args.kwargs["timeout"] == 0.25
++
++
++def test_exec_uses_real_resolver_chain_with_consented_cached_copy(monkeypatch, tmp_path):
++    import sys
++    monkeypatch.setattr(bt, "_real_profile_cdp_cache", {"cdp": "http://127.0.0.1:9999"})
++    monkeypatch.setattr(bt, "_real_profile_cdp_lock", threading.Lock())
++    monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: False)
++    monkeypatch.setattr(bt, "_cdp_http_ready", lambda *a, **kw: True)
++    monkeypatch.setattr(bt, "_get_cdp_override_raw", lambda: "")
++    # Actual scoped config read for consent, not a mocked bool.
++    home = tmp_path / "home"
++    home.mkdir()
++    (home / "config.yaml").write_text("browser:\n  use_real_profile: true\n")
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: {})
++    monkeypatch.setattr(bu, "_blocked_url_in_code", lambda code: None)
++    monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, "-c",
++        "import os,sys; print(os.environ['BU_CDP_URL']); print(os.environ['BU_NAME']); print(sys.stdin.read())"])
++    # A real child only prints its input/env; it cannot drive any browser.
++    result = json.loads(bu.browser_exec("print('synthetic')", session="synthetic-budget", timeout_s=35, local=True))
++    assert result["success"]
++    assert "http://127.0.0.1:9999" in result["output"]
++    assert "synthetic-budget" in result["output"]
++    assert "_hermes_ensure_own_tab" in result["output"]
++
++
++@pytest.mark.parametrize("stage", ["probe", "cache_lock"])
++def test_lightpanda_failure_reaps_only_new_process(monkeypatch, tmp_path, stage):
++    import tools.browser_lightpanda as lp
++    monkeypatch.setattr(lp, "find_lightpanda_binary", lambda: "synthetic-lightpanda")
++    monkeypatch.setattr(lp, "_binary_supports_http_cache", lambda *a, **kw: False)
++    monkeypatch.setattr(lp, "_pick_free_loopback_port", lambda: 9999)
++    monkeypatch.setattr(lp, "_state_dir", lambda: tmp_path)
++    monkeypatch.setattr(lp, "_safe_start_time", lambda pid: 1)
++    monkeypatch.setattr(lp, "_browser_env", lambda: {})
++    proc = Mock(pid=12345)
++    proc.poll.return_value = None
++    monkeypatch.setattr(lp.subprocess, "Popen", Mock(return_value=proc))
++    monkeypatch.setattr(lp, "_servers", {"earlier": object()})
++    lock = threading.Lock()
++    monkeypatch.setattr(lp, "_servers_lock", lock)
++    kill = Mock()
++    monkeypatch.setattr(bt, "_kill_process_tree", kill)
++    if stage == "probe":
++        monkeypatch.setattr(lp, "_cdp_ready", Mock(side_effect=bc.BrowserDeadlineExpired("synthetic probe timeout")))
++    else:
++        monkeypatch.setattr(lp, "_cdp_ready", lambda *a, **kw: True)
++        lock.acquire()
++    try:
++        with pytest.raises(TimeoutError):
++            lp.launch_lightpanda("synthetic-new", deadline=time.monotonic() + 0.05)
++    finally:
++        if stage == "cache_lock":
++            lock.release()
++    kill.assert_called_once_with(proc)
++    proc.wait.assert_called_once_with(timeout=5)
++    assert list(lp._servers) == ["earlier"]
++    assert not (tmp_path / "synthetic-new.json").exists()
++
++
++def test_default_provider_socket_timeout_keeps_legacy_fallback(monkeypatch):
++    monkeypatch.setattr(bt, "_active_sessions", {})
++    monkeypatch.setattr(bt, "_cleanup_lock", threading.Lock())
++    monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda: None)
++    monkeypatch.setattr(bt, "_update_session_activity", lambda task: None)
++    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
++    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda task: None)
++    provider = Mock()
++    provider.create_session.side_effect = TimeoutError("synthetic socket timeout")
++    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: provider)
++    fallback = Mock(return_value={"session_name": "synthetic-fallback"})
++    monkeypatch.setattr(bt, "_create_local_session", fallback)
++    assert bt._get_session_info("synthetic")["fallback_from_cloud"]
++    fallback.assert_called_once_with("synthetic")
++
++
++@pytest.mark.parametrize("name", ["node_tool_runnable", "agent_browser_runnable"])
++def test_version_probes_consume_remaining_not_ten_seconds(monkeypatch, tmp_path, clock, name):
++    import hermes_constants as hc
++    binary = tmp_path / "synthetic-version-probe"
++    binary.write_text("synthetic")
++    binary.chmod(0o700)
++    monkeypatch.setattr(hc, "with_hermes_node_path", lambda: {})
++    run = Mock(return_value=SimpleNamespace(returncode=0))
++    monkeypatch.setattr(subprocess, "run", run)
++    assert getattr(hc, name)(str(binary), deadline=100.25)
++    assert run.call_args.kwargs["timeout"] == 0.25
++    clock[0] = 101
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        getattr(hc, name)(str(binary), deadline=100.25)
++    assert run.call_count == 1
++
++
++def test_discovery_passes_deadline_without_caching_timeout(monkeypatch, clock):
++    monkeypatch.setattr(bt, "_cached_agent_browser", None)
++    monkeypatch.setattr(bt, "_agent_browser_resolved", False)
++    monkeypatch.setattr(bt.shutil, "which", lambda *a, **kw: "synthetic-agent-browser")
++    probe = Mock(side_effect=bc.BrowserDeadlineExpired("synthetic version probe"))
++    monkeypatch.setattr(bt, "agent_browser_runnable", probe)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        bt._find_agent_browser(deadline=135)
++    probe.assert_called_once_with("synthetic-agent-browser", deadline=135)
++    assert bt._agent_browser_resolved is False
++
++
++
++def test_dependency_installer_timeout_reaps_real_tree(monkeypatch, tmp_path):
++    import hermes_cli.dep_ensure as de
++    script = tmp_path / "synthetic-install.sh"
++    script.write_text("#!/bin/sh\nsleep 60\n")
++    monkeypatch.setitem(de._DEP_CHECKS, "browser", lambda **kw: False)
++    monkeypatch.setattr(de, "_find_install_script", lambda: (script, "bash"))
++    monkeypatch.setattr(de, "hermes_subprocess_env", lambda **kw: {"PATH": "/usr/bin:/bin"})
++    children = []
++    real_popen = subprocess.Popen
++    def record(*args, **kwargs):
++        proc = real_popen(*args, **kwargs)
++        children.append(proc)
++        return proc
++    monkeypatch.setattr(subprocess, "Popen", record)
++    started = time.monotonic()
++    with pytest.raises(bc.BrowserDeadlineExpired, match="dependency bootstrap"):
++        de.ensure_dependency("browser", interactive=False, deadline=started + 0.15)
++    assert time.monotonic() - started < 3
++    assert len(children) == 1 and children[0].poll() is not None
++
++
++def test_dependency_installer_preserves_confirmation(monkeypatch, tmp_path):
++    import hermes_cli.dep_ensure as de
++    monkeypatch.setitem(de._DEP_CHECKS, "browser", lambda **kw: False)
++    monkeypatch.setattr(de, "_find_install_script", lambda: (tmp_path / "synthetic-install.sh", "bash"))
++    monkeypatch.setattr(de.sys, "stdin", SimpleNamespace(isatty=lambda: True))
++    monkeypatch.setattr("builtins.input", lambda prompt: "n")
++    spawn = Mock(side_effect=AssertionError("user denied install"))
++    monkeypatch.setattr(de.subprocess, "Popen", spawn)
++    assert not de.ensure_dependency("browser", deadline=time.monotonic() + 35)
++    spawn.assert_not_called()
++
++
++def test_dependency_detection_passes_deadline_and_stops_install(monkeypatch, clock):
++    import hermes_cli.dep_ensure as de
++    probe = Mock(side_effect=bc.BrowserDeadlineExpired("synthetic dependency probe"))
++    monkeypatch.setattr(de, "agent_browser_runnable", probe)
++    monkeypatch.setattr(de.shutil, "which", lambda name: "synthetic-cli")
++    install = Mock(side_effect=AssertionError("no install after deadline"))
++    monkeypatch.setattr(de, "_find_install_script", install)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        de.ensure_dependency("browser", deadline=135)
++    probe.assert_called_once_with("synthetic-cli", deadline=135)
++    install.assert_not_called()
++
++
++def test_dependency_npx_rescan_does_not_swallow_deadline(monkeypatch):
++    import hermes_cli.dep_ensure as de
++    probe = Mock(side_effect=bc.BrowserDeadlineExpired("synthetic rescan"))
++    monkeypatch.setattr(bt, "_find_agent_browser", probe)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        de._has_npx_agent_browser(deadline=135)
++    probe.assert_called_once_with(validate=False, deadline=135)
+diff --git a/tests/tools/test_browser_real_profile.py b/tests/tools/test_browser_real_profile.py
+index a181469197192bba5f2915e6db39f094c249b1fc..baa6882815bfe5959921dc92a0417b8d6fa3d350 100644
+--- a/tests/tools/test_browser_real_profile.py
++++ b/tests/tools/test_browser_real_profile.py
+@@ -964,7 +964,16 @@ class TestReviewRound3:
+         import tools.browser_tool as bt
+         bt._real_profile_cdp_cache.clear()
+         proc = Mock(returncode=0, stdout="", stderr="")
+-        with patch.object(bt, "_use_real_profile", return_value=True), \
++        chrome = Mock()
++        chrome.poll.return_value = None
++
++        def fake_popen(*args, **kwargs):
++            (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/test\n")
++            return chrome
++
++        with patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
++             patch("hermes_cli.browser_connect.chromium_executable", return_value="/synthetic/chrome"), \
++             patch.object(bt, "_use_real_profile", return_value=True), \
+              patch.object(bt, "_using_lightpanda_engine", return_value=False), \
+              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+diff --git a/tests/tools/test_browser_supervisor_deadline.py b/tests/tools/test_browser_supervisor_deadline.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..d77d9a8e920870ee21966639ea4de92351b30848
+--- /dev/null
++++ b/tests/tools/test_browser_supervisor_deadline.py
+@@ -0,0 +1,310 @@
++"""Synthetic supervisor budget regressions; no browser, network or real sleeps."""
++import asyncio
++import threading
++import time
++from unittest.mock import Mock
++
++import pytest
++
++import hermes_cli.browser_connect as bc
++import tools.browser_supervisor as bs
++import tools.browser_tool as bt
++
++
++@pytest.fixture
++def clock(monkeypatch):
++    now = [100.0]
++    monkeypatch.setattr(time, "monotonic", lambda: now[0])
++    return now
++
++
++class BudgetLock:
++    def __init__(self, clock, *, block_on=1):
++        self.clock = clock
++        self.block_on = block_on
++        self.calls = []
++        self.releases = 0
++
++    def acquire(self, **kwargs):
++        self.calls.append(kwargs)
++        if len(self.calls) == self.block_on:
++            self.clock[0] += kwargs["timeout"]
++            return False
++        return True
++
++    def release(self):
++        self.releases += 1
++
++
++@pytest.mark.parametrize("late", [False, True])
++def test_provider_leaves_quarter_second_for_real_helper(monkeypatch, clock, late):
++    monkeypatch.setattr(bt, "_active_sessions", {})
++    monkeypatch.setattr(bt, "_cleanup_lock", threading.Lock())
++    monkeypatch.setattr(bt, "_start_browser_cleanup_thread", lambda **kw: None)
++    monkeypatch.setattr(bt, "_update_session_activity", lambda *a, **kw: None)
++    override = Mock(return_value="")
++    monkeypatch.setattr(bt, "_get_cdp_override", override)
++    provider = Mock()
++    def create(task):
++        clock[0] = 134.75
++        return {"session_name": "synthetic", "bb_session_id": "synthetic-id",
++                "cdp_url": "http://synthetic.invalid:9222"}
++    provider.create_session.side_effect = create
++    monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: provider)
++    resolutions = []
++    def resolve(url, *, deadline):
++        assert deadline == 135
++        assert bc.browser_remaining(deadline, "synthetic probe", 10) == .25
++        resolutions.append(url)
++        if len(resolutions) == 2:  # helper re-resolves after session publication
++            clock[0] += .3 if late else .1
++        return "ws://synthetic.invalid/devtools/browser/x"
++    monkeypatch.setattr(bt, "_resolve_cdp_override", resolve)
++    registry = Mock()
++    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
++    monkeypatch.setattr(bt, "_get_dialog_policy_config", lambda: ("must_respond", 300))
++    if late:
++        with pytest.raises(bc.BrowserDeadlineExpired):
++            bt._get_session_info("synthetic", deadline=135)
++        registry.get_or_start.assert_not_called()
++    else:
++        bt._get_session_info("synthetic", deadline=135)
++        assert registry.get_or_start.call_args.kwargs["deadline"] == 135
++    assert override.call_args.kwargs == {"deadline": 135}
++    provider.close_session.assert_not_called()  # published session is shared
++
++
++def test_helper_cleanup_lock_expiry(monkeypatch, clock):
++    monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++    lock = BudgetLock(clock)
++    monkeypatch.setattr(bt, "_cleanup_lock", lock)
++    with pytest.raises(bc.BrowserDeadlineExpired, match="supervisor session lock"):
++        bt._ensure_cdp_supervisor("synthetic", deadline=100.25)
++    assert lock.calls == [{"timeout": .25}]
++    assert lock.releases == 0
++
++
++@pytest.mark.parametrize("error", [bc.BrowserDeadlineExpired("synthetic"), RuntimeError("synthetic")])
++def test_helper_does_not_swallow_expiry(monkeypatch, clock, error):
++    monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "ws://synthetic.invalid")
++    monkeypatch.setattr(bt, "_get_dialog_policy_config", lambda: ("must_respond", 300))
++    registry = Mock()
++    def fail(**kwargs):
++        clock[0] = 101
++        raise error
++    registry.get_or_start.side_effect = fail
++    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        bt._ensure_cdp_supervisor("synthetic", deadline=100.25)
++
++
++@pytest.mark.parametrize("block_on", [1, 2])
++def test_registry_lock_budget_cleans_only_owned_instance(monkeypatch, clock, block_on):
++    registry = bs._SupervisorRegistry()
++    registry._lock = BudgetLock(clock, block_on=block_on)
++    own = Mock(cdp_url="ws://synthetic.invalid")
++    factory = Mock(return_value=own)
++    monkeypatch.setattr(bs, "CDPSupervisor", factory)
++    with pytest.raises(bc.BrowserDeadlineExpired, match="lock"):
++        registry.get_or_start("synthetic", own.cdp_url, deadline=100.25)
++    assert registry._lock.calls[-1] == {"timeout": .25}
++    assert not registry._by_task
++    if block_on == 1:
++        factory.assert_not_called()
++    else:
++        own.start.assert_called_once_with(timeout=15.0, deadline=100.25)
++        own.stop.assert_called_once_with(deadline=100.25)
++
++
++def test_old_stop_exhausts_budget_no_replacement(monkeypatch, clock):
++    registry = bs._SupervisorRegistry()
++    old = Mock(cdp_url="ws://synthetic.invalid/old")
++    registry._by_task["synthetic"] = old
++    def stop(*, deadline):
++        assert deadline == 100.25
++        clock[0] = deadline
++    old.stop.side_effect = stop
++    factory = Mock()
++    monkeypatch.setattr(bs, "CDPSupervisor", factory)
++    with pytest.raises(bc.BrowserDeadlineExpired, match="replacement"):
++        registry.get_or_start("synthetic", "ws://synthetic.invalid/new", deadline=100.25)
++    factory.assert_not_called()
++
++
++def test_concurrent_shared_winner_is_never_stopped(monkeypatch, clock):
++    registry = bs._SupervisorRegistry()
++    shared = Mock(cdp_url="ws://synthetic.invalid")
++    own = Mock(cdp_url=shared.cdp_url)
++    own.start.side_effect = lambda **kw: registry._by_task.update(synthetic=shared)
++    monkeypatch.setattr(bs, "CDPSupervisor", Mock(return_value=own))
++    assert registry.get_or_start("synthetic", shared.cdp_url, deadline=100.25) is shared
++    own.stop.assert_called_once_with(deadline=100.25)
++    shared.stop.assert_not_called()
++    clock[0] = 100.25
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        registry.get_or_start("synthetic", shared.cdp_url, deadline=100.25)
++    shared.stop.assert_not_called()
++    assert registry._by_task["synthetic"] is shared
++
++
++@pytest.mark.parametrize("deadline", [None, 100.25])
++def test_start_attachment_wait_and_cleanup_budget(monkeypatch, clock, deadline):
++    supervisor = bs.CDPSupervisor(task_id="synthetic", cdp_url="ws://synthetic.invalid")
++    thread = Mock()
++    monkeypatch.setattr(bs.threading, "Thread", Mock(return_value=thread))
++    ready = Mock()
++    supervisor._ready_event = ready
++    def wait(*, timeout):
++        assert timeout == (15 if deadline is None else .25)
++        clock[0] += timeout
++        return False
++    ready.wait.side_effect = wait
++    with pytest.raises(TimeoutError) as exc:
++        supervisor.start(deadline=deadline)
++    assert isinstance(exc.value, bc.BrowserDeadlineExpired) == (deadline is not None)
++    thread.start.assert_called_once()
++    thread.join.assert_called_once_with(timeout=5.0 if deadline is None else 0.0)
++    assert supervisor._stop_requested
++
++
++def test_no_thread_start_after_constructor_overruns(monkeypatch, clock):
++    supervisor = bs.CDPSupervisor(task_id="synthetic", cdp_url="ws://synthetic.invalid")
++    thread = Mock()
++    def construct(**kw):
++        clock[0] = 101
++        return thread
++    monkeypatch.setattr(bs.threading, "Thread", construct)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        supervisor.start(deadline=100.25)
++    thread.start.assert_not_called()
++    supervisor.stop(deadline=100.25)  # no join of an unstarted thread
++
++
++def test_stop_close_join_and_state_lock_share_budget(monkeypatch, clock):
++    import agent.async_utils as au
++    supervisor = bs.CDPSupervisor(task_id="synthetic", cdp_url="ws://synthetic.invalid")
++    supervisor._thread = Mock()
++    supervisor._loop = Mock()
++    future = Mock()
++    def result(*, timeout):
++        assert timeout == .25
++        clock[0] += timeout
++    future.result.side_effect = result
++    def schedule(coro, loop):
++        coro.close()
++        return future
++    monkeypatch.setattr(au, "safe_schedule_threadsafe", schedule)
++    lock = BudgetLock(clock)
++    supervisor._state_lock = lock
++    supervisor.stop(deadline=100.25)
++    supervisor._thread.join.assert_called_once_with(timeout=0.0)
++    assert lock.calls == [{"timeout": 0.0}]
++    assert supervisor._stop_requested
++
++
++def test_none_preserves_helper_and_registry_call_contract(monkeypatch):
++    override = Mock(return_value="ws://synthetic.invalid")
++    monkeypatch.setattr(bt, "_get_cdp_override", override)
++    monkeypatch.setattr(bt, "_get_dialog_policy_config", lambda: ("must_respond", 300))
++    registry = bs._SupervisorRegistry()
++    supervisor = Mock(cdp_url=override.return_value)
++    monkeypatch.setattr(bs, "CDPSupervisor", Mock(return_value=supervisor))
++    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
++    bt._ensure_cdp_supervisor("synthetic")
++    override.assert_called_once_with()
++    supervisor.start.assert_called_once_with(timeout=15.0)
++    bt._ensure_cdp_supervisor("synthetic")
++    supervisor.start.assert_called_once()
++    supervisor.stop.assert_not_called()
++
++
++@pytest.mark.parametrize("url", ["", "ws://synthetic.invalid"])
++def test_override_overrun_never_reaches_registry(monkeypatch, clock, url):
++    def override(*, deadline):
++        assert deadline == 100.25
++        clock[0] = 101
++        return url
++    monkeypatch.setattr(bt, "_get_cdp_override", override)
++    registry = Mock()
++    monkeypatch.setattr(bs, "SUPERVISOR_REGISTRY", registry)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        bt._ensure_cdp_supervisor("synthetic", deadline=100.25)
++    registry.get_or_start.assert_not_called()
++
++
++def test_healthy_existing_with_budget_is_reused_without_stop(clock):
++    registry = bs._SupervisorRegistry()
++    shared = Mock(cdp_url="ws://synthetic.invalid")
++    registry._by_task["synthetic"] = shared
++    assert registry.get_or_start("synthetic", shared.cdp_url, deadline=100.25) is shared
++    shared.start.assert_not_called()
++    shared.stop.assert_not_called()
++
++
++def test_late_registry_constructor_never_starts(monkeypatch, clock):
++    registry = bs._SupervisorRegistry()
++    own = Mock()
++    def create(**kw):
++        clock[0] = 101
++        return own
++    monkeypatch.setattr(bs, "CDPSupervisor", create)
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        registry.get_or_start("synthetic", "ws://synthetic.invalid", deadline=100.25)
++    own.start.assert_not_called()
++    own.stop.assert_called_once_with(deadline=100.25)
++    assert not registry._by_task
++
++
++def test_pending_connection_after_stop_cannot_attach(monkeypatch):
++    import websockets
++    from unittest.mock import AsyncMock
++    supervisor = bs.CDPSupervisor(task_id="synthetic", cdp_url="ws://synthetic.invalid")
++    ws = Mock(close=AsyncMock())
++    async def connect(*args, **kwargs):
++        supervisor._stop_requested = True  # start budget expired during connect
++        return ws
++    monkeypatch.setattr(websockets, "connect", connect)
++    attach = AsyncMock()
++    monkeypatch.setattr(supervisor, "_attach_initial_page", attach)
++    asyncio.run(supervisor._run())
++    ws.close.assert_awaited_once()
++    attach.assert_not_awaited()
++    assert supervisor._ws is None
++
++
++def test_none_start_failure_does_not_add_second_stop(monkeypatch):
++    registry = bs._SupervisorRegistry()
++    own = Mock()
++    own.start.side_effect = RuntimeError("synthetic attach failure")
++    monkeypatch.setattr(bs, "CDPSupervisor", Mock(return_value=own))
++    with pytest.raises(RuntimeError, match="synthetic attach failure"):
++        registry.get_or_start("synthetic", "ws://synthetic.invalid")
++    own.stop.assert_not_called()  # legacy start owns its failure cleanup
++
++
++def test_expired_publication_keeps_concurrent_shared_winner(monkeypatch, clock):
++    registry = bs._SupervisorRegistry()
++    registry._lock = BudgetLock(clock, block_on=2)
++    shared = Mock(cdp_url="ws://synthetic.invalid")
++    own = Mock(cdp_url=shared.cdp_url)
++    own.start.side_effect = lambda **kw: registry._by_task.update(synthetic=shared)
++    monkeypatch.setattr(bs, "CDPSupervisor", Mock(return_value=own))
++    with pytest.raises(bc.BrowserDeadlineExpired, match="publication lock"):
++        registry.get_or_start("synthetic", shared.cdp_url, deadline=100.25)
++    own.stop.assert_called_once_with(deadline=100.25)
++    shared.stop.assert_not_called()
++    assert registry._by_task["synthetic"] is shared
++
++
++def test_expiry_during_health_check_cannot_remove_existing(clock):
++    registry = bs._SupervisorRegistry()
++    shared = Mock(cdp_url="ws://synthetic.invalid")
++    registry._by_task["synthetic"] = shared
++    def unhealthy():
++        clock[0] = 101
++        return False
++    shared._thread.is_alive.side_effect = unhealthy
++    with pytest.raises(bc.BrowserDeadlineExpired):
++        registry.get_or_start("synthetic", shared.cdp_url, deadline=100.25)
++    shared.stop.assert_not_called()
++    assert registry._by_task["synthetic"] is shared
+diff --git a/tests/tools/test_browser_use_cli.py b/tests/tools/test_browser_use_cli.py
+index efcbfe5ebad3967459c46fd3ee096b76f049c3c8..d387c8b1af7d6fb63281a237f1e58f198a271455 100644
+--- a/tests/tools/test_browser_use_cli.py
++++ b/tests/tools/test_browser_use_cli.py
+@@ -393,7 +393,7 @@ class TestBackendCdpResolution:
+     def test_cdp_override_exported(self, monkeypatch):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "http://127.0.0.1:9222")
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "http://127.0.0.1:9222")
+         env = self._env()
+         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+         assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
+@@ -401,7 +401,7 @@ class TestBackendCdpResolution:
+     def test_ws_override_uses_bu_cdp_ws(self, monkeypatch):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "wss://connect.example/x")
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "wss://connect.example/x")
+         env = self._env()
+         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+         assert env["BU_CDP_WS"] == "wss://connect.example/x"
+@@ -409,11 +409,11 @@ class TestBackendCdpResolution:
+     def test_cloud_provider_session_exported(self, monkeypatch):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+         monkeypatch.setattr(
+             bt, "_get_session_info",
+-            lambda task_id: {"cdp_url": "wss://browser.example/cdp/abc"},
++            lambda task_id, **kw: {"cdp_url": "wss://browser.example/cdp/abc"},
+         )
+         env = self._env()
+         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+@@ -422,8 +422,8 @@ class TestBackendCdpResolution:
+     def test_no_provider_leaves_env_untouched(self, monkeypatch):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: None)
+         env = self._env()
+         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+@@ -434,8 +434,8 @@ class TestBackendCdpResolution:
+         def boom(task_id):
+             raise RuntimeError("api down")
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+         monkeypatch.setattr(bt, "_get_session_info", boom)
+         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
+         assert err and "api down" in err
+@@ -443,9 +443,9 @@ class TestBackendCdpResolution:
+     def test_provider_without_cdp_returns_error(self, monkeypatch):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
+-        monkeypatch.setattr(bt, "_get_session_info", lambda task_id: {"cdp_url": None})
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
++        monkeypatch.setattr(bt, "_get_session_info", lambda task_id, **kw: {"cdp_url": None})
+         err = bu_cli._resolve_backend_cdp(self._env(), "t1")
+         assert err and "no" in err.lower() and "CDP" in err
+ 
+@@ -457,12 +457,12 @@ class TestBackendCdpResolution:
+ 
+         seen = []
+ 
+-        def fake_session_info(key):
++        def fake_session_info(key, **kw):
+             seen.append(key)
+             return {"cdp_url": "wss://browser.example/cdp/" + key}
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+         monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
+         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME ws:$BU_CDP_WS"\n')
+         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+@@ -479,11 +479,11 @@ class TestBackendCdpResolution:
+         import tools.browser_tool as bt
+ 
+         seen = []
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+         monkeypatch.setattr(
+             bt, "_get_session_info",
+-            lambda key: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
++            lambda key, **kw: seen.append(key) or {"cdp_url": "wss://x/cdp/a"},
+         )
+         env1, env2 = {}, {}
+         assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
+@@ -501,11 +501,11 @@ class TestBackendCdpResolution:
+         class _BUProvider:
+             name = "browser-use"
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BUProvider())
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: _BUProvider())
+         monkeypatch.setattr(
+             bt, "_get_session_info",
+-            lambda key: (_ for _ in ()).throw(AssertionError("must skip provider")),
++            lambda key, **kw: (_ for _ in ()).throw(AssertionError("must skip provider")),
+         )
+         monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "browser-use"})
+         env = {}
+@@ -520,15 +520,15 @@ class TestOwnTabPreamble:
+     def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
+         if provider:
+-            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++            monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+             monkeypatch.setattr(
+                 bt, "_get_session_info",
+-                lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
++                lambda key, **kw: {"cdp_url": "wss://browser.example/cdp/" + key},
+             )
+         else:
+-            monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
++            monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: None)
+         # fake CLI echoes stdin back so we can inspect what code was sent
+         cli = _fake_cli(tmp_path, "cat\n")
+         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+@@ -555,11 +555,11 @@ class TestOwnTabPreamble:
+     def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+         monkeypatch.setattr(
+             bt, "_get_session_info",
+-            lambda key: {"cdp_url": "wss://browser.example/cdp/" + key},
++            lambda key, **kw: {"cdp_url": "wss://browser.example/cdp/" + key},
+         )
+         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "sentinel:${_HERMES_BU_PRIVATE_BROWSER:-unset}"\n')
+         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+@@ -1105,14 +1105,14 @@ class TestLightpandaBackendResolution:
+ 
+         seen = []
+ 
+-        def fake_session_info(key):
++        def fake_session_info(key, **kw):
+             seen.append(key)
+             if boom:
+                 raise boom
+             return info if info is not None else {"cdp_url": "http://127.0.0.1:43111"}
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: None)
+         monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: engine)
+         monkeypatch.setattr(bt, "_get_session_info", fake_session_info)
+         return seen
+@@ -1164,7 +1164,7 @@ class TestLightpandaBackendResolution:
+         import tools.browser_tool as bt
+ 
+         seen = self._setup(monkeypatch)
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "http://127.0.0.1:9222")
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "http://127.0.0.1:9222")
+         env = {}
+         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+         assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
+@@ -1174,7 +1174,7 @@ class TestLightpandaBackendResolution:
+         import tools.browser_tool as bt
+ 
+         seen = self._setup(monkeypatch, info={"cdp_url": "wss://cloud.example/x"})
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: object())
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: object())
+         env = {}
+         assert bu_cli._resolve_backend_cdp(env, "t1") is None
+         assert env["BU_CDP_WS"] == "wss://cloud.example/x"
+@@ -1188,11 +1188,11 @@ class TestLightpandaPreamble:
+         (lightpanda-io/browser#1962)."""
+         import tools.browser_tool as bt
+ 
+-        monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
+-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
++        monkeypatch.setattr(bt, "_get_cdp_override", lambda **kw: "")
++        monkeypatch.setattr(bt, "_get_cloud_provider", lambda **kw: None)
+         monkeypatch.setattr(bt, "_using_lightpanda_engine", lambda: True)
+         monkeypatch.setattr(
+-            bt, "_get_session_info", lambda key: {"cdp_url": "http://127.0.0.1:43111"}
++            bt, "_get_session_info", lambda key, **kw: {"cdp_url": "http://127.0.0.1:43111"}
+         )
+         cli = _fake_cli(tmp_path, "cat\n")
+         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+diff --git a/tools/browser_lightpanda.py b/tools/browser_lightpanda.py
+index 800c05aa05445c9e5acd5004ac5f71157baee8e5..eec9858528024e639af295aef86db7d3b397828f 100644
+--- a/tools/browser_lightpanda.py
++++ b/tools/browser_lightpanda.py
+@@ -13,6 +13,7 @@ left behind by a crashed Hermes.
+ """
+ 
+ import functools
++from hermes_cli.browser_connect import browser_remaining, browser_deadline_lock
+ import json
+ import logging
+ import os
+@@ -133,7 +134,7 @@ _HTTP_CACHE_FLAG = "--http-cache-dir"
+ 
+ 
+ @functools.lru_cache(maxsize=1)
+-def _binary_supports_http_cache(binary: str) -> bool:
++def _binary_supports_http_cache(binary: str, *, deadline: Optional[float] = None) -> bool:
+     """True if ``lightpanda serve`` accepts ``--http-cache-dir``.
+ 
+     The flag landed upstream in 0.3.x; older binaries fatally reject it
+@@ -144,11 +145,12 @@ def _binary_supports_http_cache(binary: str) -> bool:
+     try:
+         proc = subprocess.run(
+             [binary, "help"],
+-            capture_output=True, text=True, timeout=3.0,
++            capture_output=True, text=True, timeout=browser_remaining(deadline, "Lightpanda help probe", 3.0),
+             stdin=subprocess.DEVNULL,
+         )
+         return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))
+     except Exception as e:
++        browser_remaining(deadline, "Lightpanda help probe")
+         logger.debug("lightpanda http-cache probe failed (%s); assuming no", e)
+         return False
+ 
+@@ -167,12 +169,13 @@ def _browser_env() -> dict:
+         return os.environ.copy()
+ 
+ 
+-def _cdp_ready(url: str) -> bool:
++def _cdp_ready(url: str, *, deadline: Optional[float] = None) -> bool:
+     try:
+         from hermes_cli.browser_connect import is_browser_debug_ready
+ 
+-        return is_browser_debug_ready(url, timeout=0.2)
++        return is_browser_debug_ready(url, timeout=0.2, **({"deadline": deadline} if deadline is not None else {}))
+     except Exception as e:
++        browser_remaining(deadline, "Lightpanda CDP probe")
+         logger.debug("CDP readiness probe failed for %s: %s", url, e)
+         return False
+ 
+@@ -231,7 +234,7 @@ def _unlink_record(session_name: str) -> None:
+ 
+ 
+ def launch_lightpanda(
+-    session_name: str, *, block_private_networks: bool = False
++    session_name: str, *, block_private_networks: bool = False, deadline: Optional[float] = None
+ ) -> Tuple[Optional[LightpandaServer], Optional[str]]:
+     """Start ``lightpanda serve`` on a free loopback port for ``session_name``.
+ 
+@@ -240,6 +243,7 @@ def launch_lightpanda(
+     ``$HERMES_HOME/cache/browser-use/lightpanda/<session>.log`` so a chatty
+     process can never block on a pipe; only the tail is read on failure.
+     """
++    browser_remaining(deadline, "Lightpanda discovery")
+     binary = find_lightpanda_binary()
+     if not binary:
+         if os.name == "nt":
+@@ -255,16 +259,18 @@ def launch_lightpanda(
+ 
+     port = _pick_free_loopback_port()
+     argv = [binary, "serve", "--host", "127.0.0.1", "--port", str(port)]
+-    if _binary_supports_http_cache(binary):
++    if _binary_supports_http_cache(binary, **({"deadline": deadline} if deadline is not None else {})):
+         argv += [_HTTP_CACHE_FLAG, str(_http_cache_dir())]
+     if block_private_networks:
+         argv.append("--block-private-networks")
++    browser_remaining(deadline, "Lightpanda help probe")
+     log_path = str(_state_dir() / f"{session_name}.log")
+ 
+     # No Windows branch here: find_lightpanda_binary() returns None on nt,
+     # so launch always errors out above before reaching the spawn.
+     popen_kwargs = {"start_new_session": True}
+ 
++    browser_remaining(deadline, "Lightpanda launch")
+     try:
+         with open(log_path, "wb") as log_file:
+             proc = subprocess.Popen(
+@@ -278,44 +284,55 @@ def launch_lightpanda(
+     except (OSError, subprocess.SubprocessError) as e:
+         return None, f"Failed to launch lightpanda serve ({binary}): {e}"
+ 
+-    url = f"http://127.0.0.1:{port}"
+-    deadline = time.monotonic() + _READY_TIMEOUT_S
+-    while True:
+-        rc = proc.poll()
+-        if rc is not None:
+-            tail = _read_log_tail(log_path)
+-            detail = f": {tail}" if tail else ""
+-            return None, (
+-                f"lightpanda serve exited with code {rc} before {url}/json/version "
+-                f"answered{detail}"
+-            )
+-        if _cdp_ready(url):
+-            break
+-        if time.monotonic() >= deadline:
+-            _terminate(proc)
+-            tail = _read_log_tail(log_path)
+-            detail = f" (last stderr line: {tail})" if tail else ""
+-            return None, (
+-                f"lightpanda serve did not expose {url}/json/version within "
+-                f"{int(_READY_TIMEOUT_S)}s{detail}"
+-            )
+-        time.sleep(_POLL_INTERVAL_S)
+-
+-    server = LightpandaServer(
+-        session_name=session_name,
+-        port=port,
+-        proc=proc,
+-        log_path=log_path,
+-        start_time=_safe_start_time(proc.pid),
+-    )
+-    _write_record(server)
+-    with _servers_lock:
+-        _servers[session_name] = server
+-    logger.info(
+-        "Started lightpanda serve (pid %s, port %s) for session %s",
+-        proc.pid, port, session_name,
+-    )
+-    return server, None
++    ready = False
++    try:
++        url = f"http://127.0.0.1:{port}"
++        ready_deadline = time.monotonic() + browser_remaining(deadline, "Lightpanda startup", _READY_TIMEOUT_S)
++        while True:
++            rc = proc.poll()
++            if rc is not None:
++                tail = _read_log_tail(log_path)
++                detail = f": {tail}" if tail else ""
++                return None, (
++                    f"lightpanda serve exited with code {rc} before {url}/json/version "
++                    f"answered{detail}"
++                )
++            if _cdp_ready(url, **({"deadline": deadline} if deadline is not None else {})):
++                break
++            if time.monotonic() >= ready_deadline:
++                tail = _read_log_tail(log_path)
++                detail = f" (last stderr line: {tail})" if tail else ""
++                return None, (
++                    f"lightpanda serve did not expose {url}/json/version within "
++                    f"{int(_READY_TIMEOUT_S)}s{detail}"
++                )
++            time.sleep(min(_POLL_INTERVAL_S, max(0, ready_deadline - time.monotonic())))
++
++        server = LightpandaServer(
++            session_name=session_name,
++            port=port,
++            proc=proc,
++            log_path=log_path,
++            start_time=_safe_start_time(proc.pid),
++        )
++        _write_record(server)
++        with browser_deadline_lock(_servers_lock, deadline, "Lightpanda cache lock"):
++            _servers[session_name] = server
++        logger.info(
++            "Started lightpanda serve (pid %s, port %s) for session %s",
++            proc.pid, port, session_name,
++        )
++        ready = True
++        return server, None
++    finally:
++        if not ready:
++            from tools.browser_tool import _kill_process_tree
++            try:
++                if proc.poll() is None:
++                    _kill_process_tree(proc)
++                proc.wait(timeout=5)
++            finally:
++                _unlink_record(session_name)
+ 
+ 
+ def get_server(session_name: str) -> Optional[LightpandaServer]:
+diff --git a/tools/browser_supervisor.py b/tools/browser_supervisor.py
+index d17806f4b2ada0df70a74b69c1311296aee5b985..3f4ecb0a204c1ba9bf0a9577d83c91df492be2ba 100644
+--- a/tools/browser_supervisor.py
++++ b/tools/browser_supervisor.py
+@@ -25,6 +25,7 @@ import json
+ import logging
+ import threading
+ import time
++from hermes_cli.browser_connect import BrowserDeadlineExpired, browser_remaining, browser_deadline_lock
+ from dataclasses import dataclass
+ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+ 
+@@ -350,7 +351,7 @@ class CDPSupervisor:
+ 
+     # ── Public sync API ──────────────────────────────────────────────────────
+ 
+-    def start(self, timeout: float = 15.0) -> None:
++    def start(self, timeout: float = 15.0, *, deadline: Optional[float] = None) -> None:
+         """Launch the background loop and wait until attachment is complete.
+ 
+         Raises whatever exception attach failed with (connect error, bad
+@@ -358,19 +359,32 @@ class CDPSupervisor:
+         supervisor is fully wired up — pending-dialog events will be captured
+         as of the moment ``start()`` returns.
+         """
++        browser_remaining(deadline, "supervisor start")
+         if self._thread and self._thread.is_alive():
+             return
+         self._ready_event.clear()
+         self._start_error = None
+         self._stop_requested = False
+-        self._thread = threading.Thread(
++        thread = threading.Thread(
+             target=self._thread_main,
+             name=f"cdp-supervisor-{self.task_id}",
+             daemon=True,
+         )
++        browser_remaining(deadline, "supervisor start")
++        self._thread = thread
+         self._thread.start()
+-        if not self._ready_event.wait(timeout=timeout):
+-            self.stop()
++        try:
++            ready = self._ready_event.wait(
++                timeout=browser_remaining(deadline, "supervisor attachment", timeout)
++            )
++            browser_remaining(deadline, "supervisor attachment")
++        except BrowserDeadlineExpired:
++            # Only this newly launched instance belongs to this attempt.
++            self.stop(deadline=deadline)
++            raise
++        if not ready:
++            self.stop(**({"deadline": deadline} if deadline is not None else {}))
++            browser_remaining(deadline, "supervisor attachment")
+             try:
+                 from agent.redact import redact_cdp_url
+                 _safe_url = redact_cdp_url(self.cdp_url)
+@@ -382,7 +396,8 @@ class CDPSupervisor:
+             )
+         if self._start_error is not None:
+             err = self._start_error
+-            self.stop()
++            self.stop(**({"deadline": deadline} if deadline is not None else {}))
++            browser_remaining(deadline, "supervisor attachment")
+             # ``err`` is a raw ``websockets`` exception whose message embeds the
+             # full cdp_url (token / userinfo). Re-raise a redacted RuntimeError
+             # and suppress the raw cause (``from None``) so no credential leaks
+@@ -392,8 +407,11 @@ class CDPSupervisor:
+                 f"CDP supervisor failed to start: {_redact_cdp_error_text(err)}"
+             ) from None
+ 
+-    def stop(self, timeout: float = 5.0) -> None:
+-        """Cancel the supervisor task and join the thread."""
++    def stop(self, timeout: float = 5.0, *, deadline: Optional[float] = None) -> None:
++        """Cancel the supervisor; expired budgets still request nonblocking cleanup."""
++        def remaining(cap):
++            return cap if deadline is None else max(0.0, min(cap, deadline - time.monotonic()))
++
+         self._stop_requested = True
+         loop = self._loop
+         if loop is not None and loop.is_running():
+@@ -414,15 +432,20 @@ class CDPSupervisor:
+                 fut = safe_schedule_threadsafe(_close_ws(), loop)
+                 if fut is not None:
+                     try:
+-                        fut.result(timeout=2.0)
++                        fut.result(timeout=remaining(2.0))
+                     except Exception:
+                         pass
+             except RuntimeError:
+                 pass  # loop already shutting down
+         if self._thread is not None:
+-            self._thread.join(timeout=timeout)
+-        with self._state_lock:
+-            self._active = False
++            self._thread.join(timeout=remaining(timeout))
++        acquired = (self._state_lock.acquire() if deadline is None else
++                    self._state_lock.acquire(timeout=remaining(timeout)))
++        if acquired:
++            try:
++                self._active = False
++            finally:
++                self._state_lock.release()
+ 
+     def snapshot(self) -> SupervisorSnapshot:
+         """Return an immutable snapshot of current state."""
+@@ -675,6 +698,11 @@ class CDPSupervisor:
+                 backoff = min(backoff * 2, 10.0)
+                 continue
+ 
++            if self._stop_requested:
++                # A budget-limited start may have returned while connect was pending.
++                await self._ws.close()
++                self._ws = None
++                return
+             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
+             try:
+                 # Reset per-connection session state so stale ids don't hang
+@@ -1446,13 +1474,14 @@ class _SupervisorRegistry:
+         dialog_policy: str = DEFAULT_DIALOG_POLICY,
+         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
+         start_timeout: float = 15.0,
++        deadline: Optional[float] = None,
+     ) -> CDPSupervisor:
+         """Idempotently ensure a supervisor is running for ``(task_id, cdp_url)``.
+ 
+         If a supervisor exists for this task but was bound to a different
+         ``cdp_url``, the old one is stopped and a fresh one is started.
+         """
+-        with self._lock:
++        with browser_deadline_lock(self._lock, deadline, "supervisor registry lock"):
+             existing = self._by_task.get(task_id)
+             if existing is not None:
+                 if existing.cdp_url == cdp_url:
+@@ -1462,25 +1491,36 @@ class _SupervisorRegistry:
+                         return existing
+                     # Unhealthy — tear down and recreate.
+                 # URL changed or unhealthy — tear down, fall through to re-create.
++                browser_remaining(deadline, "supervisor replacement")
+                 self._by_task.pop(task_id, None)
++        budget = {"deadline": deadline} if deadline is not None else {}
+         if existing is not None:
+-            existing.stop()
++            existing.stop(**budget)
+ 
++        browser_remaining(deadline, "supervisor replacement")
+         supervisor = CDPSupervisor(
+             task_id=task_id,
+             cdp_url=cdp_url,
+             dialog_policy=dialog_policy,
+             dialog_timeout_s=dialog_timeout_s,
+         )
+-        supervisor.start(timeout=start_timeout)
+-        with self._lock:
+-            # Guard against a concurrent get_or_start from another thread.
+-            already = self._by_task.get(task_id)
+-            if already is not None and already.cdp_url == cdp_url:
+-                supervisor.stop()
+-                return already
+-            self._by_task[task_id] = supervisor
+-        return supervisor
++        published = False
++        started = False
++        try:
++            browser_remaining(deadline, "supervisor start")
++            supervisor.start(timeout=start_timeout, **budget)
++            started = True
++            with browser_deadline_lock(self._lock, deadline, "supervisor publication lock"):
++                # A concurrent winner is shared; only discard our own instance.
++                already = self._by_task.get(task_id)
++                if already is not None and already.cdp_url == cdp_url:
++                    return already
++                self._by_task[task_id] = supervisor
++                published = True
++            return supervisor
++        finally:
++            if not published and (deadline is not None or started):
++                supervisor.stop(**budget)
+ 
+     def stop(self, task_id: str) -> None:
+         """Stop and discard the supervisor for ``task_id`` if it exists."""
+diff --git a/tools/browser_tool.py b/tools/browser_tool.py
+index ecc72a690455c882629cb42bf6bba4f8e6f83145..b29a31fada6bb4f9c9ddd4cae1d7cd4e5e0167fa 100644
+--- a/tools/browser_tool.py
++++ b/tools/browser_tool.py
+@@ -62,6 +62,7 @@ import shutil
+ import sys
+ import tempfile
+ import threading
++from hermes_cli.browser_connect import BrowserDeadlineExpired, browser_remaining, browser_deadline_lock
+ import time
+ from datetime import datetime, timezone
+ from typing import Dict, Any, Optional, List, Tuple, Union
+@@ -496,7 +497,7 @@ def _get_vision_model() -> Optional[str]:
+     return os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
+ 
+ 
+-def _resolve_cdp_override(cdp_url: str) -> str:
++def _resolve_cdp_override(cdp_url: str, *, deadline: Optional[float] = None) -> str:
+     """Normalize a user-supplied CDP endpoint into a concrete connectable URL.
+ 
+     Accepts:
+@@ -531,10 +532,11 @@ def _resolve_cdp_override(cdp_url: str) -> str:
+     try:
+         import requests  # lazy — shared module object, test patches still apply
+ 
+-        response = requests.get(version_url, timeout=10)
++        response = requests.get(version_url, timeout=browser_remaining(deadline, "CDP discovery", 10))
+         response.raise_for_status()
+         payload = response.json()
+     except Exception as exc:
++        browser_remaining(deadline, "CDP discovery")
+         logger.warning(
+             "Failed to resolve CDP endpoint %s via %s: %s",
+             _sanitize_url_for_logs(raw),
+@@ -543,6 +545,7 @@ def _resolve_cdp_override(cdp_url: str) -> str:
+         )
+         return raw
+ 
++    browser_remaining(deadline, "CDP discovery")
+     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+     if ws_url:
+         logger.info(
+@@ -598,7 +601,7 @@ def _get_cdp_override_raw() -> str:
+     return ""
+ 
+ 
+-def _get_cdp_override() -> str:
++def _get_cdp_override(*, deadline: Optional[float] = None) -> str:
+     """Return a normalized CDP URL override, or empty string.
+ 
+     Precedence is:
+@@ -617,7 +620,7 @@ def _get_cdp_override() -> str:
+     raw = _get_cdp_override_raw()
+     if not raw:
+         return ""
+-    return _resolve_cdp_override(raw)
++    return _resolve_cdp_override(raw, **({"deadline": deadline} if deadline is not None else {}))
+ 
+ 
+ def _get_dialog_policy_config() -> Tuple[str, float]:
+@@ -656,7 +659,7 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
+         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
+ 
+ 
+-def _ensure_cdp_supervisor(task_id: str) -> None:
++def _ensure_cdp_supervisor(task_id: str, *, deadline: Optional[float] = None) -> None:
+     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
+ 
+     Idempotent — delegates to ``SupervisorRegistry.get_or_start`` which skips
+@@ -671,19 +674,21 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
+       2. ``_active_sessions[task_id]["cdp_url"]`` — covers Browserbase + any
+          other cloud provider whose ``create_session`` returns a raw CDP URL.
+ 
+-    Swallows all errors — failing to attach the supervisor must not break
++    Swallows attach errors except shared-budget expiry — failure must not break
+     the browser session itself.  The agent simply won't see
+     ``pending_dialogs`` / ``frame_tree`` fields in snapshots.
+     """
+-    cdp_url = _get_cdp_override()
++    cdp_url = _get_cdp_override(**({"deadline": deadline} if deadline is not None else {}))
++    browser_remaining(deadline, "CDP supervisor resolution")
+     if not cdp_url:
+         # Fallback: active session may carry a per-session CDP URL from a
+         # cloud provider (Browserbase sets this).
+-        with _cleanup_lock:
++        with browser_deadline_lock(_cleanup_lock, deadline, "supervisor session lock"):
+             session_info = _active_sessions.get(task_id, {})
+         maybe = str(session_info.get("cdp_url") or "")
+         if maybe:
+-            cdp_url = _resolve_cdp_override(maybe)
++            cdp_url = _resolve_cdp_override(maybe, **({"deadline": deadline} if deadline is not None else {}))
++            browser_remaining(deadline, "CDP supervisor resolution")
+     if not cdp_url:
+         return
+     try:
+@@ -695,8 +700,13 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
+             cdp_url=cdp_url,
+             dialog_policy=policy,
+             dialog_timeout_s=timeout_s,
++            **({"deadline": deadline} if deadline is not None else {}),
+         )
++        browser_remaining(deadline, "CDP supervisor attachment")
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as exc:
++        browser_remaining(deadline, "CDP supervisor attachment")
+         logger.debug(
+             "CDP supervisor attach for task=%s failed (non-fatal): %s",
+             task_id,
+@@ -802,13 +812,13 @@ def _ensure_browser_plugins_loaded() -> None:
+         logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
+ 
+ 
+-def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
++def _get_cloud_provider(*, deadline: Optional[float] = None) -> Optional[CloudBrowserProvider]:
+     """Return the provider cached for the active Hermes profile."""
+     global _cached_cloud_provider, _cloud_provider_resolved
+     global _cached_cloud_provider_scope
+ 
+     scope = hermes_home_key()
+-    with _cloud_provider_cache_lock:
++    with browser_deadline_lock(_cloud_provider_cache_lock, deadline, "provider lock"):
+         # Tests and legacy reset paths clear the boolean. Treat that as a full
+         # reset even if a previous scoped resolution remains mirrored here.
+         if not _cloud_provider_resolved:
+@@ -826,6 +836,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+             _cached_cloud_provider = None
+             _cloud_provider_resolved = False
+             resolved = _resolve_cloud_provider_uncached()
++            browser_remaining(deadline, "provider discovery")
+             after_generation = _browser_registry_generation(scope=scope)
+             if before_generation != after_generation:
+                 # A force reload replaced/unloaded this profile's provider
+@@ -1561,25 +1572,27 @@ def _terminate_real_profile_chrome() -> None:
+             logger.debug("real-profile chrome terminate failed: %s", e)
+ 
+ 
+-def _agent_browser_argv(browser_cmd: str) -> list:
++def _agent_browser_argv(browser_cmd: str, *, deadline: Optional[float] = None) -> list:
+     """Command prefix to invoke agent-browser (binary or npx sentinel)."""
+     if _is_npx_agent_browser_sentinel(browser_cmd):
+-        _npx_bin = _resolve_npx_bin() or "npx"
++        _npx_bin = _resolve_npx_bin(**({"deadline": deadline} if deadline is not None else {})) or "npx"
+         return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+     return [browser_cmd]
+ 
+ 
+-def _cdp_http_ready(http_cdp: str) -> bool:
++def _cdp_http_ready(http_cdp: str, *, deadline: Optional[float] = None) -> bool:
+     """True when an ``http://host:port`` CDP discovery root answers."""
+     try:
+         from hermes_cli.browser_connect import is_browser_debug_ready
+ 
+-        return is_browser_debug_ready(http_cdp, timeout=1.0)
++        return is_browser_debug_ready(http_cdp, timeout=1.0, **({"deadline": deadline} if deadline is not None else {}))
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         return False
+ 
+ 
+-def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
++def _agent_browser_get_cdp(session_name: str, *, deadline: Optional[float] = None) -> Optional[str]:
+     """Return the HTTP CDP endpoint of an agent-browser session, or None.
+ 
+     agent-browser prints ``ws://127.0.0.1:<port>/devtools/browser/<id>`` for
+@@ -1588,17 +1601,21 @@ def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
+     running or the port can't be parsed.
+     """
+     try:
+-        browser_cmd = _find_agent_browser()
++        browser_cmd = _find_agent_browser(**({"deadline": deadline} if deadline is not None else {}))
+     except FileNotFoundError:
+         return None
+     try:
+         proc = subprocess.run(
+-            [*_agent_browser_argv(browser_cmd), "--session", session_name, "get", "cdp-url"],
+-            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
++            [*_agent_browser_argv(browser_cmd, **({"deadline": deadline} if deadline is not None else {})), "--session", session_name, "get", "cdp-url"],
++            capture_output=True, text=True, env=_build_browser_env(), timeout=browser_remaining(deadline, "agent-browser probe/close", 15),
+         )
++    except BrowserDeadlineExpired:
++        raise
+     except (subprocess.SubprocessError, OSError) as e:
++        browser_remaining(deadline, "agent-browser probe/close")
+         logger.debug("real-profile get cdp-url failed: %s", e)
+         return None
++    browser_remaining(deadline, "agent-browser probe")
+     out = (proc.stdout or "").strip()
+     m = re.search(r"ws://127\.0\.0\.1:(\d+)/", out)
+     if not m:
+@@ -1625,22 +1642,25 @@ def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
+         return False
+ 
+ 
+-def _agent_browser_close_session(session_name: str) -> None:
++def _agent_browser_close_session(session_name: str, *, deadline: Optional[float] = None) -> None:
+     """Best-effort close of an agent-browser session (stale/wrong-dir cleanup)."""
+     try:
+-        browser_cmd = _find_agent_browser()
++        browser_cmd = _find_agent_browser(**({"deadline": deadline} if deadline is not None else {}))
+     except FileNotFoundError:
+         return
+     try:
+         subprocess.run(
+-            [*_agent_browser_argv(browser_cmd), "--session", session_name, "close"],
+-            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
++            [*_agent_browser_argv(browser_cmd, **({"deadline": deadline} if deadline is not None else {})), "--session", session_name, "close"],
++            capture_output=True, text=True, env=_build_browser_env(), timeout=browser_remaining(deadline, "agent-browser probe/close", 15),
+         )
++    except BrowserDeadlineExpired:
++        raise
+     except (subprocess.SubprocessError, OSError) as e:
++        browser_remaining(deadline, "agent-browser probe/close")
+         logger.debug("real-profile session close failed: %s", e)
+ 
+ 
+-def _real_profile_cdp() -> tuple:
++def _real_profile_cdp(*, deadline: Optional[float] = None) -> tuple:
+     """Resolve ``(cdp_url, error)`` for consented real-profile browsing.
+ 
+     Snapshots the user's default-Chromium profile into a hermes-owned copy
+@@ -1652,7 +1672,11 @@ def _real_profile_cdp() -> tuple:
+     with no mock-keychain switches, so keyring-encrypted cookies decrypt.
+ 
+     A single shared agent-browser session is reused across calls (its CDP URL
+-    is cached and re-validated). Returns ``(None, message)`` fail-closed when
++    is cached and re-validated). The optional monotonic deadline bounds lock,
++    probe, snapshot-child, dependency install, startup and attach waits.
++    Config/stat/open calls, plugin hooks, installer confirmation and process
++    creation/reaping remain synchronous cooperative boundaries; this is not
++    a guarantee that every OS syscall can be preempted. Returns ``(None, message)`` fail-closed when
+     the default browser is non-Chromium or the snapshot/launch fails;
+     ``(None, None)`` when consent is off.
+     """
+@@ -1690,14 +1714,16 @@ def _real_profile_cdp() -> tuple:
+         snapshot_real_profile,
+     )
+ 
+-    with _real_profile_cdp_lock:
++    deadline_kw = {"deadline": deadline} if deadline is not None else {}
++    with browser_deadline_lock(_real_profile_cdp_lock, deadline, "real-profile lock"):
+         # Reuse a live copy-browser from an earlier call this process made.
+         cached = _real_profile_cdp_cache.get("cdp")
+-        if cached and _cdp_http_ready(cached):
++        if cached and _cdp_http_ready(cached, **deadline_kw):
+             return cached, None
+         _real_profile_cdp_cache.pop("cdp", None)
+ 
+-        browser = detect_default_chromium()
++        browser = detect_default_chromium(**deadline_kw)
++        browser_remaining(deadline, "default-browser detection")
+         if browser is None:
+             return None, (
+                 "browser.use_real_profile is on, but your default browser is not a "
+@@ -1730,17 +1756,19 @@ def _real_profile_cdp() -> tuple:
+         # snapshot/overlay happens solely on the relaunch path below, when no
+         # live browser owns the dir.
+         copy_dir = real_profile_copy_dir(browser)
+-        existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
+-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
++        existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION, **deadline_kw)
++        if existing and _cdp_http_ready(existing, **deadline_kw) and _cdp_on_data_dir(existing, copy_dir):
+             _real_profile_cdp_cache["cdp"] = existing
+             return existing, None
++        browser_remaining(deadline, "real-profile reuse probe")
+         if existing:
+             # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
+             # close it so nothing holds the dir open before we overlay + relaunch.
+-            _agent_browser_close_session(_REAL_PROFILE_SESSION)
++            _agent_browser_close_session(_REAL_PROFILE_SESSION, **deadline_kw)
+ 
+         # No live browser owns the dir now — safe to (re)snapshot + overlay.
+-        snap_dir, err = snapshot_real_profile(browser)
++        snap_dir, err = snapshot_real_profile(browser, **deadline_kw)
++        browser_remaining(deadline, "profile snapshot")
+         if err or not snap_dir:
+             from hermes_cli.browser_connect import _PROFILE_LOCKED_PREFIX
+ 
+@@ -1819,6 +1847,7 @@ def _real_profile_cdp() -> tuple:
+         )
+         if not _want_headed:
+             chrome_argv.append("--headless=new")
++        browser_remaining(deadline, "real-profile launch")
+         try:
+             chrome_proc = subprocess.Popen(
+                 chrome_argv,
+@@ -1832,93 +1861,108 @@ def _real_profile_cdp() -> tuple:
+             return None, f"browser.use_real_profile is on, but the launch failed: {e}"
+         _real_profile_chrome_procs.append(chrome_proc)
+ 
+-        # Wait for DevToolsActivePort to appear (Chrome picks a free port).
+-        import time as _time
++        ready = False
++        try:
++            # Wait for DevToolsActivePort to appear (Chrome picks a free port).
++            import time as _time
++
++            startup_deadline = _time.monotonic() + browser_remaining(deadline, "real-profile startup", 30.0)
++            port = None
++            while _time.monotonic() < startup_deadline:
++                try:
++                    with open(port_file, encoding="utf-8") as fh:
++                        line = fh.readline().strip()
++                    if line.isdigit():
++                        port = int(line)
++                        break
++                except OSError:
++                    pass
++                if chrome_proc.poll() is not None:
++                    return None, (
++                        "browser.use_real_profile is on, but Chrome exited during "
++                        "startup (another instance may hold the profile copy)."
++                    )
++                _time.sleep(min(0.25, max(0, startup_deadline - _time.monotonic())))
++            if port is None:
++                return None, (
++                    "browser.use_real_profile is on, but the real-profile browser "
++                    "did not expose a debug port in time. Retry, or turn the toggle off."
++                )
++
++            # Tell agent-browser to ATTACH to the running Chrome instead of
++            # launching its own (its own launch injects mock-keychain flags).
++            try:
++                browser_cmd = _find_agent_browser(**({"deadline": deadline} if deadline is not None else {}))
++            except FileNotFoundError as e:
++                return None, (
++                    "browser.use_real_profile is on, but the local browser engine "
++                    f"(agent-browser) is not installed: {e}"
++                )
++            argv = [
++                *_agent_browser_argv(browser_cmd, **({"deadline": deadline} if deadline is not None else {})),
++                "--session", _REAL_PROFILE_SESSION,
++                "--cdp", str(port),
++                "open", "about:blank",
++            ]
++            try:
++                proc = subprocess.run(
++                    argv, capture_output=True, text=True,
++                    env=_build_browser_env(),
++                    timeout=browser_remaining(deadline, "agent-browser attach", _get_open_command_timeout(first_open=True)),
++                )
++            except subprocess.TimeoutExpired:
++                return None, (
++                    "browser.use_real_profile is on, but the real-profile browser "
++                    "took too long to start. Retry, or turn the toggle off."
++                )
++            except (subprocess.SubprocessError, OSError) as e:
++                return None, f"browser.use_real_profile is on, but the launch failed: {e}"
++            if proc.returncode != 0:
++                tail = (proc.stderr or proc.stdout or "").strip().splitlines()
++                reason = tail[-1] if tail else f"exit {proc.returncode}"
++                return None, (
++                    f"browser.use_real_profile is on, but the real-profile browser "
++                    f"failed to start: {reason}"
++                )
+ 
+-        deadline = _time.monotonic() + 30.0
+-        port = None
+-        while _time.monotonic() < deadline:
++            cdp = _agent_browser_get_cdp(_REAL_PROFILE_SESSION, **deadline_kw)
++            # The daemon may answer with the endpoint of a
++            # browser IT spawned (throwaway temp profile) instead of the real
++            # Chrome we launched on the copy. The DevToolsActivePort file OUR
++            # Chrome wrote is the authoritative endpoint of the logged-in browser;
++            # if the daemon disagrees, trust ours.
+             try:
+                 with open(port_file, encoding="utf-8") as fh:
+-                    line = fh.readline().strip()
+-                if line.isdigit():
+-                    port = int(line)
+-                    break
+-            except OSError:
++                    our_port = fh.readline().strip()
++                m = re.search(r":(\d+)", cdp or "")
++                if m and m.group(1) != our_port:
++                    cdp = f"http://127.0.0.1:{our_port}"
++            except (OSError, ValueError):
+                 pass
+-            if chrome_proc.poll() is not None:
+-                _terminate_real_profile_chrome()
++            if not cdp:
+                 return None, (
+-                    "browser.use_real_profile is on, but Chrome exited during "
+-                    "startup (another instance may hold the profile copy)."
++                    "browser.use_real_profile is on, but the real-profile browser "
++                    "started without exposing a devtools endpoint. Retry, or turn "
++                    "the toggle off."
+                 )
+-            _time.sleep(0.25)
+-        if port is None:
+-            _terminate_real_profile_chrome()
+-            return None, (
+-                "browser.use_real_profile is on, but the real-profile browser "
+-                "did not expose a debug port in time. Retry, or turn the toggle off."
+-            )
+-
+-        # Tell agent-browser to ATTACH to the running Chrome instead of
+-        # launching its own (its own launch injects mock-keychain flags).
+-        try:
+-            browser_cmd = _find_agent_browser()
+-        except FileNotFoundError as e:
+-            return None, (
+-                "browser.use_real_profile is on, but the local browser engine "
+-                f"(agent-browser) is not installed: {e}"
+-            )
+-        argv = [
+-            *_agent_browser_argv(browser_cmd),
+-            "--session", _REAL_PROFILE_SESSION,
+-            "--cdp", str(port),
+-            "open", "about:blank",
+-        ]
+-        try:
+-            proc = subprocess.run(
+-                argv, capture_output=True, text=True,
+-                timeout=_get_open_command_timeout(first_open=True),
+-                env=_build_browser_env(),
+-            )
+-        except subprocess.TimeoutExpired:
+-            return None, (
+-                "browser.use_real_profile is on, but the real-profile browser "
+-                "took too long to start. Retry, or turn the toggle off."
+-            )
+-        except (subprocess.SubprocessError, OSError) as e:
+-            return None, f"browser.use_real_profile is on, but the launch failed: {e}"
+-        if proc.returncode != 0:
+-            tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+-            reason = tail[-1] if tail else f"exit {proc.returncode}"
+-            return None, (
+-                f"browser.use_real_profile is on, but the real-profile browser "
+-                f"failed to start: {reason}"
+-            )
+-
+-        cdp = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
+-        # The daemon may answer with the endpoint of a
+-        # browser IT spawned (throwaway temp profile) instead of the real
+-        # Chrome we launched on the copy. The DevToolsActivePort file OUR
+-        # Chrome wrote is the authoritative endpoint of the logged-in browser;
+-        # if the daemon disagrees, trust ours.
+-        try:
+-            with open(port_file, encoding="utf-8") as fh:
+-                our_port = fh.readline().strip()
+-            m = re.search(r":(\d+)", cdp or "")
+-            if m and m.group(1) != our_port:
+-                cdp = f"http://127.0.0.1:{our_port}"
+-        except (OSError, ValueError):
+-            pass
+-        if not cdp:
+-            return None, (
+-                "browser.use_real_profile is on, but the real-profile browser "
+-                "started without exposing a devtools endpoint. Retry, or turn "
+-                "the toggle off."
+-            )
+-        _real_profile_cdp_cache["cdp"] = cdp
+-        logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+-        return cdp, None
++            browser_remaining(deadline, "real-profile endpoint")
++            _real_profile_cdp_cache["cdp"] = cdp
++            logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
++            ready = True
++            return cdp, None
++        finally:
++            if not ready:
++                # Never sweep shared/reused Chrome or the user's live browser.
++                # This handle is exclusively the copy-browser just spawned.
++                try:
++                    if chrome_proc.poll() is None:
++                        _kill_process_tree(chrome_proc)
++                    chrome_proc.wait(timeout=5)
++                except Exception as exc:
++                    logger.warning("real-profile cleanup incomplete: %s", exc)
++                else:
++                    if chrome_proc in _real_profile_chrome_procs:
++                        _real_profile_chrome_procs.remove(chrome_proc)
+ 
+ 
+ def _url_is_private(url: str) -> bool:
+@@ -2826,11 +2870,11 @@ def _browser_cleanup_thread_worker():
+             time.sleep(1)
+ 
+ 
+-def _start_browser_cleanup_thread():
++def _start_browser_cleanup_thread(*, deadline: Optional[float] = None):
+     """Start the background cleanup thread if not already running."""
+     global _cleanup_thread, _cleanup_running
+ 
+-    with _cleanup_lock:
++    with browser_deadline_lock(_cleanup_lock, deadline, "session cleanup lock"):
+         if _cleanup_thread is None or not _cleanup_thread.is_alive():
+             _cleanup_running = True
+             _cleanup_thread = threading.Thread(
+@@ -2850,7 +2894,7 @@ def _stop_browser_cleanup_thread():
+         _cleanup_thread.join(timeout=5)
+ 
+ 
+-def _update_session_activity(task_id: str):
++def _update_session_activity(task_id: str, *, deadline: Optional[float] = None):
+     """Update the last activity timestamp for a session.
+ 
+     Also records the owning Hermes home on first sight so the process-global
+@@ -2858,7 +2902,7 @@ def _update_session_activity(task_id: str):
+     activity touch deliberately does NOT reset ``_cleanup_failures`` — only a
+     successful cleanup does.
+     """
+-    with _cleanup_lock:
++    with browser_deadline_lock(_cleanup_lock, deadline, "session activity lock"):
+         _session_last_activity[task_id] = time.time()
+         _session_owner_homes.setdefault(task_id, str(get_hermes_home()))
+ 
+@@ -3025,8 +3069,10 @@ BROWSER_TOOL_SCHEMAS = [
+ # Utility Functions
+ # ============================================================================
+ 
+-def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict[str, str]:
++def _create_local_session(task_id: str, allow_real_profile: bool = True, *, deadline: Optional[float] = None) -> Dict[str, str]:
+     import uuid
++    deadline_kw = {"deadline": deadline} if deadline is not None else {}
++    browser_remaining(deadline, "local session")
+ 
+     # Real-profile consent: instead of an agent-browser-managed throwaway
+     # Chromium, attach this local session (via CDP) to the user's default
+@@ -3043,7 +3089,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
+     # profile. (Also keeps a real-profile resolve failure from breaking
+     # private-URL routing, which has nothing to do with the real profile.)
+     if allow_real_profile:
+-        cdp_url, err = _real_profile_cdp()
++        cdp_url, err = _real_profile_cdp(**deadline_kw)
+         if err:
+             raise RuntimeError(err)
+         if cdp_url:
+@@ -3054,7 +3100,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
+             return {
+                 "session_name": session_name,
+                 "bb_session_id": None,
+-                "cdp_url": _resolve_cdp_override(cdp_url),
++                "cdp_url": _resolve_cdp_override(cdp_url, **deadline_kw),
+                 "features": {"local": True, "real_profile": True},
+             }
+ 
+@@ -3064,7 +3110,7 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
+     # they are hidden in Browser Use mode — and keep driving Lightpanda via
+     # ``agent-browser --engine lightpanda`` on the plain local session below.
+     if _is_browser_use_cli_mode() and _using_lightpanda_engine():
+-        return _create_lightpanda_session(task_id)
++        return _create_lightpanda_session(task_id, **deadline_kw)
+ 
+     session_name = f"h_{uuid.uuid4().hex[:10]}"
+     logger.info("Created local browser session %s for task %s",
+@@ -3077,14 +3123,15 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
+     }
+ 
+ 
+-def _create_lightpanda_session(task_id: str) -> Dict[str, Any]:
++def _create_lightpanda_session(task_id: str, *, deadline: Optional[float] = None) -> Dict[str, Any]:
+     """Spawn ``lightpanda serve`` for this session key (Browser Use mode)."""
+     import uuid
+     from tools.browser_lightpanda import launch_lightpanda
+ 
+     session_name = f"lp_{uuid.uuid4().hex[:10]}"
+     server, err = launch_lightpanda(
+-        session_name, block_private_networks=not _is_local_backend()
++        session_name, block_private_networks=not _is_local_backend(),
++        **({"deadline": deadline} if deadline is not None else {})
+     )
+     if err:
+         raise RuntimeError(err)
+@@ -3124,7 +3171,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
+     }
+ 
+ 
+-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
++def _get_session_info(task_id: Optional[str] = None, *, deadline: Optional[float] = None) -> Dict[str, Any]:
+     """
+     Get or create session info for the given session key.
+ 
+@@ -3142,16 +3189,18 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+     Returns:
+         Dict with session_name (always), bb_session_id + cdp_url (cloud only)
+     """
++    deadline_kw = {"deadline": deadline} if deadline is not None else {}
++    browser_remaining(deadline, "session resolution")
+     if task_id is None:
+         task_id = "default"
+ 
+     # Start the cleanup thread if not running (handles inactivity timeouts)
+-    _start_browser_cleanup_thread()
++    _start_browser_cleanup_thread(**deadline_kw)
+ 
+     # Update activity timestamp for this session
+-    _update_session_activity(task_id)
++    _update_session_activity(task_id, **deadline_kw)
+ 
+-    with _cleanup_lock:
++    with browser_deadline_lock(_cleanup_lock, deadline, "session cache lock"):
+         # Check if we already have a session for this task
+         existing_session = _active_sessions.get(task_id)
+ 
+@@ -3163,8 +3212,8 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+     if existing_session is not None and not _browser_session_backend(task_id).ensure_healthy():
+         # Teardown removes the activity entry; the replacement must be
+         # tracked by the inactivity reaper like an initial session.
+-        _update_session_activity(task_id)
+-        with _cleanup_lock:
++        _update_session_activity(task_id, **deadline_kw)
++        with browser_deadline_lock(_cleanup_lock, deadline, "session cache lock"):
+             replacement = _active_sessions.get(task_id)
+         if replacement is not None and replacement is not existing_session:
+             # Another thread already recycled and re-created it.
+@@ -3185,13 +3234,13 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+         _cleanup_single_browser_session(task_id)
+         # Cleanup removes the activity entry. The replacement session must be
+         # tracked by the inactivity reaper just like an initial session.
+-        _update_session_activity(task_id)
++        _update_session_activity(task_id, **deadline_kw)
+ 
+         # Guard against a concurrent replacement: another thread may have
+         # already cleaned up the expired session and created a fresh one
+         # while we were waiting.  If so, return the live replacement instead
+         # of falling through to create yet another session.
+-        with _cleanup_lock:
++        with browser_deadline_lock(_cleanup_lock, deadline, "session cache lock"):
+             replacement = _active_sessions.get(task_id)
+         if replacement is not None and replacement is not existing_session:
+             return replacement
+@@ -3202,65 +3251,91 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+     # the bare task_id key.
+     force_local = _is_local_sidecar_key(task_id)
+ 
+-    # Create session outside the lock (network call in cloud mode)
+-    cdp_override = _get_cdp_override()
+-    if cdp_override and not force_local:
+-        session_info = _create_cdp_session(task_id, cdp_override)
+-    elif force_local:
+-        # Hybrid private-URL sidecar: NEVER the real profile (see
+-        # _create_local_session — presenting real cookies to an arbitrary LAN
+-        # host the model routed here is unconsented exposure).
+-        session_info = _create_local_session(task_id, allow_real_profile=False)
+-    else:
+-        provider = _get_cloud_provider()
+-        if provider is None:
+-            session_info = _create_local_session(task_id)
++    session_info = None
++    provider = None
++    published = False
++    try:
++        # Create session outside the lock (network call in cloud mode)
++        cdp_override = _get_cdp_override(**deadline_kw)
++        if cdp_override and not force_local:
++            session_info = _create_cdp_session(task_id, cdp_override)
++        elif force_local:
++            # Hybrid private-URL sidecar: NEVER the real profile (see
++            # _create_local_session — presenting real cookies to an arbitrary LAN
++            # host the model routed here is unconsented exposure).
++            session_info = _create_local_session(task_id, allow_real_profile=False, **deadline_kw)
+         else:
+-            try:
+-                session_info = provider.create_session(task_id)
+-                # Validate cloud provider returned a usable session
+-                if not session_info or not isinstance(session_info, dict):
+-                    raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+-                if session_info.get("cdp_url"):
+-                    # Some cloud providers (including Browser-Use v3) return an HTTP
+-                    # CDP discovery URL instead of a raw websocket endpoint.
+-                    session_info = dict(session_info)
+-                    session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+-            except Exception as e:
+-                provider_name = type(provider).__name__
+-                logger.warning(
+-                    "Cloud provider %s failed (%s); attempting fallback to local "
+-                    "Chromium for task %s",
+-                    provider_name, e, task_id,
+-                    exc_info=True,
+-                )
++            provider = _get_cloud_provider(**deadline_kw)
++            if provider is None:
++                session_info = _create_local_session(task_id, **deadline_kw)
++            else:
+                 try:
+-                    session_info = _create_local_session(task_id)
+-                except Exception as local_error:
+-                    raise RuntimeError(
+-                        f"Cloud provider {provider_name} failed ({e}) and local "
+-                        f"fallback also failed ({local_error})"
+-                    ) from e
+-                # Mark session as degraded for observability
+-                if isinstance(session_info, dict):
+-                    session_info = dict(session_info)
+-                    session_info["fallback_from_cloud"] = True
+-                    session_info["fallback_reason"] = str(e)
+-                    session_info["fallback_provider"] = provider_name
++                    browser_remaining(deadline, "provider create_session")
++                    # Plugin API has no cancellation contract; do not abandon it
++                    # in a thread or lose ownership of a late-created session.
++                    session_info = provider.create_session(task_id)
++                    browser_remaining(deadline, "provider create_session")
++                    # Validate cloud provider returned a usable session
++                    if not session_info or not isinstance(session_info, dict):
++                        raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
++                    if session_info.get("cdp_url"):
++                        # Some cloud providers (including Browser-Use v3) return an HTTP
++                        # CDP discovery URL instead of a raw websocket endpoint.
++                        session_info = dict(session_info)
++                        session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]), **deadline_kw)
++                except BrowserDeadlineExpired:
++                    raise
++                except Exception as e:
++                    browser_remaining(deadline, "provider create_session")
++                    provider_name = type(provider).__name__
++                    logger.warning(
++                        "Cloud provider %s failed (%s); attempting fallback to local "
++                        "Chromium for task %s",
++                        provider_name, e, task_id,
++                        exc_info=True,
++                    )
++                    try:
++                        session_info = _create_local_session(task_id, **deadline_kw)
++                    except Exception as local_error:
++                        raise RuntimeError(
++                            f"Cloud provider {provider_name} failed ({e}) and local "
++                            f"fallback also failed ({local_error})"
++                        ) from e
++                    # Mark session as degraded for observability
++                    if isinstance(session_info, dict):
++                        session_info = dict(session_info)
++                        session_info["fallback_from_cloud"] = True
++                        session_info["fallback_reason"] = str(e)
++                        session_info["fallback_provider"] = provider_name
++
++        with browser_deadline_lock(_cleanup_lock, deadline, "session cache lock"):
++            # Double-check: another thread may have created a session while we
++            # were doing the network call. Use the existing one to avoid leaking
++            # orphan cloud sessions.
++            if task_id in _active_sessions:
++                return _active_sessions[task_id]
++            session_info = dict(session_info)
++            session_info.setdefault("session_key", task_id)
++            session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
++            _active_sessions[task_id] = session_info
++            published = True
++            # A brand-new session is healthy by definition — drop any stale
++            # suspect flag left by a wedged-path eviction of its predecessor.
++            _suspect_browser_sessions.pop(task_id, None)
+ 
+-    with _cleanup_lock:
+-        # Double-check: another thread may have created a session while we
+-        # were doing the network call. Use the existing one to avoid leaking
+-        # orphan cloud sessions.
+-        if task_id in _active_sessions:
+-            return _active_sessions[task_id]
+-        session_info = dict(session_info)
+-        session_info.setdefault("session_key", task_id)
+-        session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
+-        _active_sessions[task_id] = session_info
+-        # A brand-new session is healthy by definition — drop any stale
+-        # suspect flag left by a wedged-path eviction of its predecessor.
+-        _suspect_browser_sessions.pop(task_id, None)
++    finally:
++        if deadline is not None and session_info and not published:
++            # A late result/failed discovery/cache-lock timeout still has an
++            # owner. Reclaim ONLY this attempt, never a concurrent cache hit.
++            # Plugin cleanup is synchronous and may overrun the deadline.
++            try:
++                if provider is not None and session_info.get("bb_session_id"):
++                    provider.close_session(session_info["bb_session_id"])
++                elif (session_info.get("features") or {}).get("lightpanda"):
++                    from tools.browser_lightpanda import stop_lightpanda
++                    stop_lightpanda(session_info["session_name"])
++            except Exception as exc:
++                logger.warning("Unpublished browser session cleanup failed: %s", exc)
+ 
+     # Lazy-start the CDP supervisor now that the session exists (if the
+     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
+@@ -3270,8 +3345,10 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
+     # tools that consume supervisor state are hidden, so the supervisor
+     # would just hold an idle second CDP connection to the process.
+     if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
+-        _ensure_cdp_supervisor(task_id)
++        browser_remaining(deadline, "CDP supervisor")
++        _ensure_cdp_supervisor(task_id, **({"deadline": deadline} if deadline is not None else {}))
+ 
++    browser_remaining(deadline, "session resolution")
+     return session_info
+ 
+ 
+@@ -3284,7 +3361,7 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
+     return os.path.exists(path) and (os.name == "nt" or os.access(path, os.X_OK))
+ 
+ 
+-def _resolve_npx_bin() -> Optional[str]:
++def _resolve_npx_bin(*, deadline: Optional[float] = None) -> Optional[str]:
+     """Resolve a runnable npx binary, preferring the Hermes-managed/Homebrew
+     extended search over a bare ambient PATH lookup.
+ 
+@@ -3294,18 +3371,20 @@ def _resolve_npx_bin() -> Optional[str]:
+     ``find_hermes_node_executable`` uses to self-heal a managed Node tree)
+     before being trusted, falling through to the next candidate otherwise.
+     """
++    deadline_kw = {"deadline": deadline} if deadline is not None else {}
++    browser_remaining(deadline, "npx discovery")
+     extended_path = _merge_browser_path("")
+     if extended_path:
+         extended_npx = shutil.which("npx", path=extended_path)
+-        if extended_npx and node_tool_runnable(extended_npx):
++        if extended_npx and node_tool_runnable(extended_npx, **deadline_kw):
+             return extended_npx
+     npx_path = shutil.which("npx")
+-    if npx_path and node_tool_runnable(npx_path):
++    if npx_path and node_tool_runnable(npx_path, **deadline_kw):
+         return npx_path
+     return None
+ 
+ 
+-def _find_agent_browser(*, validate: bool = True) -> str:
++def _find_agent_browser(*, validate: bool = True, deadline: Optional[float] = None) -> str:
+     """
+     Find the agent-browser CLI executable.
+ 
+@@ -3319,6 +3398,8 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+         FileNotFoundError: If agent-browser is not installed
+     """
+     global _cached_agent_browser, _agent_browser_resolved
++    deadline_kw = {"deadline": deadline} if deadline is not None else {}
++    browser_remaining(deadline, "agent-browser discovery")
+     if _agent_browser_resolved:
+         if _cached_agent_browser is None:
+             raise FileNotFoundError(
+@@ -3344,7 +3425,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+     # Check if it's in PATH (global install)
+     which_result = shutil.which("agent-browser")
+     if which_result and (
+-        agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
++        agent_browser_runnable(which_result, **deadline_kw) if validate else _agent_browser_candidate_present(which_result)
+     ):
+         if not validate:
+             return which_result
+@@ -3358,7 +3439,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+     if extended_path:
+         which_result = shutil.which("agent-browser", path=extended_path)
+         if which_result and (
+-            agent_browser_runnable(which_result) if validate else _agent_browser_candidate_present(which_result)
++            agent_browser_runnable(which_result, **deadline_kw) if validate else _agent_browser_candidate_present(which_result)
+         ):
+             if not validate:
+                 return which_result
+@@ -3379,7 +3460,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+     if local_bin_dir.is_dir():
+         local_which = shutil.which("agent-browser", path=str(local_bin_dir))
+         if local_which and (
+-            agent_browser_runnable(local_which) if validate else _agent_browser_candidate_present(local_which)
++            agent_browser_runnable(local_which, **deadline_kw) if validate else _agent_browser_candidate_present(local_which)
+         ):
+             if not validate:
+                 return local_which
+@@ -3388,7 +3469,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+             return _cached_agent_browser
+ 
+     # Check common npx locations (also search the extended fallback PATH)
+-    npx_path = _resolve_npx_bin()
++    npx_path = _resolve_npx_bin(**deadline_kw)
+     if npx_path:
+         if not validate:
+             return NPX_AGENT_BROWSER_SENTINEL
+@@ -3402,7 +3483,10 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+     # Nothing found — try lazy installation before giving up.
+     try:
+         from hermes_cli.dep_ensure import ensure_dependency
+-        if ensure_dependency("browser"):
++        browser_remaining(deadline, "browser dependency bootstrap")
++        installed = ensure_dependency("browser", **deadline_kw)
++        browser_remaining(deadline, "browser dependency bootstrap")
++        if installed:
+             candidates = [
+                 shutil.which("agent-browser"),
+                 shutil.which("agent-browser", path=extended_path) if extended_path else None,
+@@ -3411,10 +3495,12 @@ def _find_agent_browser(*, validate: bool = True) -> str:
+                 shutil.which("agent-browser", path=str(get_hermes_home() / "node")),
+             ]
+             for recheck in candidates:
+-                if recheck and agent_browser_runnable(recheck):
++                if recheck and agent_browser_runnable(recheck, **deadline_kw):
+                     _cached_agent_browser = recheck
+                     _agent_browser_resolved = True
+                     return recheck
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         pass
+ 
+diff --git a/tools/browser_use_cli.py b/tools/browser_use_cli.py
+index 989f05eb9130947fa3af0538c492acaa566a513a..2f760a1756b239c2a22d87ecb81349f26eb54c10 100644
+--- a/tools/browser_use_cli.py
++++ b/tools/browser_use_cli.py
+@@ -15,6 +15,7 @@ from pathlib import Path
+ from typing import Any, Dict, List, Optional, Tuple
+ 
+ from utils import is_truthy_value
++from hermes_cli.browser_connect import BrowserDeadlineExpired, browser_remaining
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -506,7 +507,8 @@ def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
+ 
+ 
+ def _resolve_lightpanda_cdp(
+-    env: dict, task_id: Optional[str], session_name: str = ""
++    env: dict, task_id: Optional[str], session_name: str = "",
++    *, deadline: Optional[float] = None,
+ ) -> Optional[str]:
+     """Point the harness at a Hermes-spawned ``lightpanda serve``.
+ 
+@@ -519,17 +521,24 @@ def _resolve_lightpanda_cdp(
+     """
+     try:
+         from tools.browser_tool import _get_session_info, _using_lightpanda_engine
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+         logger.debug("browser_tool lightpanda resolution unavailable: %s", e)
+         return None
+     try:
+         if not _using_lightpanda_engine():
+             return None
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:
+         logger.debug("browser engine lookup failed: %s", e)
+         return None
+     try:
+-        session_info = _get_session_info(_backend_cache_key(task_id, session_name))
++        session_info = _get_session_info(_backend_cache_key(task_id, session_name), **({"deadline": deadline} if deadline is not None else {}))
++        browser_remaining(deadline, "Lightpanda resolution")
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:
+         return (
+             f"Lightpanda could not be started: {e} Set browser.engine to auto "
+@@ -548,7 +557,8 @@ def _resolve_lightpanda_cdp(
+ 
+ 
+ def _resolve_backend_cdp(
+-    env: dict, task_id: Optional[str], session_name: str = ""
++    env: dict, task_id: Optional[str], session_name: str = "",
++    *, deadline: Optional[float] = None,
+ ) -> Optional[str]:
+     """Point the harness at the configured browser backend's CDP endpoint.
+ 
+@@ -586,12 +596,16 @@ def _resolve_backend_cdp(
+             _get_cloud_provider,
+             _get_session_info,
+         )
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+         logger.debug("browser_tool backend resolution unavailable: %s", e)
+         return None
+ 
+     try:
+-        override = _get_cdp_override()
++        override = _get_cdp_override(**({"deadline": deadline} if deadline is not None else {}))
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         override = ""
+     if override:
+@@ -599,12 +613,14 @@ def _resolve_backend_cdp(
+         return None
+ 
+     try:
+-        provider = _get_cloud_provider()
++        provider = _get_cloud_provider(**({"deadline": deadline} if deadline is not None else {}))
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:
+         logger.debug("Cloud provider lookup failed: %s", e)
+         provider = None
+     if provider is None:
+-        return _resolve_lightpanda_cdp(env, task_id, session_name)
++        return _resolve_lightpanda_cdp(env, task_id, session_name, **({"deadline": deadline} if deadline is not None else {}))
+ 
+     # Browser Use direct-API configs: the CLI talks to Browser Use cloud
+     # natively (BU_AUTOSPAWN / auth login) — routing through the legacy
+@@ -626,7 +642,10 @@ def _resolve_backend_cdp(
+         # same name reuses one browser across calls and tasks, and different
+         # names never collide. Unnamed calls keep the per-task key.
+         cache_key = _backend_cache_key(task_id, session_name)
+-        session_info = _get_session_info(cache_key)
++        session_info = _get_session_info(cache_key, **({"deadline": deadline} if deadline is not None else {}))
++        browser_remaining(deadline, "provider resolution")
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:
+         return (
+             f"Cloud browser provider {type(provider).__name__} failed to "
+@@ -655,12 +674,14 @@ def _real_profile_consented() -> bool:
+         from tools.browser_tool import _use_real_profile
+ 
+         return _use_real_profile()
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+         logger.debug("real-profile consent lookup failed: %s", e)
+         return False
+ 
+ 
+-def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
++def _resolve_real_profile_cdp(env: dict, force_local: bool, *, deadline: Optional[float] = None) -> Optional[str]:
+     """Point the harness at the user's real-profile copy-browser when consented.
+ 
+     With ``browser.use_real_profile`` on, local browsing must mean the user's
+@@ -694,6 +715,8 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+             _get_cloud_provider,
+             _real_profile_cdp,
+         )
++    except BrowserDeadlineExpired:
++        raise
+     except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+         logger.debug("real-profile backend resolution unavailable: %s", e)
+         return None
+@@ -701,6 +724,8 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+     try:
+         if _get_cdp_override_raw():
+             return None
++    except BrowserDeadlineExpired:
++        raise
+     except Exception:
+         pass
+ 
+@@ -709,14 +734,17 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+         # or legacy Browser Use cloud config) stays on its backend unless the
+         # model passes local=true.
+         try:
+-            if _get_cloud_provider() is not None:
++            if _get_cloud_provider(**({"deadline": deadline} if deadline is not None else {})) is not None:
+                 return None
++        except BrowserDeadlineExpired:
++            raise
+         except Exception:
+             return None
+         if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+             return None
+ 
+-    cdp, err = _real_profile_cdp()
++    cdp, err = _real_profile_cdp(**({"deadline": deadline} if deadline is not None else {}))
++    browser_remaining(deadline, "real-profile resolution")
+     if err:
+         return err
+     if cdp:
+@@ -730,6 +758,32 @@ def browser_exec(
+     timeout_s: int = _DEFAULT_TIMEOUT_S,
+     task_id: Optional[str] = None,
+     local: bool = False,
++):
++    """One budget for resolver + CLI, not a fresh timeout per stage.
++
++    Sync config/plugin/DNS IO is cooperative; it cannot be cancelled safely.
++    A CLI timeout does not cancel work already accepted by its shared daemon.
++    """
++    started = time.monotonic()
++    try:
++        timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
++    except (TypeError, ValueError):
++        timeout = _DEFAULT_TIMEOUT_S
++    try:
++        return _browser_exec(code, session, timeout, task_id, local,
++                             deadline=started + timeout)
++    except BrowserDeadlineExpired as exc:
++        from tools.registry import tool_error
++        return tool_error(str(exc) + ". Retry with a larger timeout_s; the expired stage was not retried on another profile.")
++
++
++def _browser_exec(
++    code: str,
++    session: str = "",
++    timeout_s: int = _DEFAULT_TIMEOUT_S,
++    task_id: Optional[str] = None,
++    local: bool = False,
++    *, deadline: float,
+ ):
+     """Run Python code through the browser-use CLI, and return its output"""
+     from tools.registry import tool_error, tool_result
+@@ -738,6 +792,7 @@ def browser_exec(
+         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+ 
+     blocked = _blocked_url_in_code(code)
++    browser_remaining(deadline, "URL policy checks")
+     if blocked:
+         return tool_error(blocked)
+ 
+@@ -763,7 +818,9 @@ def browser_exec(
+     # local=True it forces that even under a cloud backend. Runs BEFORE
+     # provider resolution so a real-profile hit short-circuits the cloud
+     # path via the BU_CDP_* env contract.
+-    rp_err = _resolve_real_profile_cdp(env, force_local=bool(local))
++    browser_remaining(deadline, "real-profile resolution")
++    rp_err = _resolve_real_profile_cdp(env, force_local=bool(local), deadline=deadline)
++    browser_remaining(deadline, "real-profile resolution")
+     if rp_err:
+         return tool_error(rp_err)
+     if local and not (env.get("BU_CDP_URL") or env.get("BU_CDP_WS")):
+@@ -784,7 +841,9 @@ def browser_exec(
+     # each other's daemon (#86894). Browser Use direct-API cloud configs
+     # are the one exception: the CLI manages named cloud browsers natively,
+     # and _resolve_backend_cdp skips provider resolution for them.
+-    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
++    browser_remaining(deadline, "backend resolution")
++    backend_err = _resolve_backend_cdp(env, task_id, session_name=session, deadline=deadline)
++    browser_remaining(deadline, "backend resolution")
+     if backend_err:
+         return tool_error(backend_err)
+ 
+@@ -806,10 +865,7 @@ def browser_exec(
+     if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+         env["BU_AUTOSPAWN"] = "1"
+ 
+-    try:
+-        timeout = max(_MIN_TIMEOUT_S, min(int(timeout_s), _MAX_TIMEOUT_S))
+-    except (TypeError, ValueError):
+-        timeout = _DEFAULT_TIMEOUT_S
++    timeout = timeout_s  # normalized once, before resolver work
+ 
+     # Windows: hide the console the .cmd shim would flash (as browser_tool does)
+     popen_extra: dict = {}
+@@ -831,7 +887,7 @@ def browser_exec(
+             input=code,
+             capture_output=True,
+             text=True,
+-            timeout=timeout,
++            timeout=browser_remaining(deadline, "CLI execution"),
+             env=env,
+             **popen_extra,
+         )
+@@ -846,6 +902,7 @@ def browser_exec(
+     except OSError as e:
+         return tool_error(f"Failed to launch browser-use CLI: {e}")
+ 
++    browser_remaining(deadline, "CLI execution")
+     result = {
+         "success": proc.returncode == 0,
+         "exit_code": proc.returncode,
+@@ -1039,7 +1096,7 @@ BROWSER_EXEC_SCHEMA = {
+             },
+             "timeout_s": {
+                 "type": "integer",
+-                "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S}).",
++                "description": f"Time budget for browser setup and CLI execution (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S}). Synchronous OS/plugin I/O and cleanup may overrun; work already accepted by the daemon may continue after timeout.",
+                 "default": _DEFAULT_TIMEOUT_S,
+             },
+         },

@@ -139,6 +139,19 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
+    func testHermesMemoryCenterDecodesNativeProfileContract() throws {
+        let payload = Data(#"{"items":[{"id":"mem_abc","target":"user","content":"偏好结论先行"}],"limits":{"user":1375,"memory":2200},"usage":{"user":6,"memory":0},"review_interval_turns":10}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let center = try decoder.decode(HermesMemoryCenterDTO.self, from: payload)
+
+        XCTAssertEqual(center.items.first?.id, "mem_abc")
+        XCTAssertEqual(center.items.first?.target, "user")
+        XCTAssertEqual(center.limits["memory"], 2_200)
+        XCTAssertEqual(center.reviewIntervalTurns, 10)
+    }
+
     func testNativeChatPresentationUsesTruthfulSingleRunningState() {
         let steps = [
             ReasoningStep(

@@ -21,7 +21,8 @@ import httpx
 import yaml
 home, source = map(Path, sys.argv[1:])
 (home / 'config.yaml').write_text(yaml.safe_dump({
-    'web': {'extract_backend': 'ai-lab-native'},
+    # Isolate the native provider; never let this HTTP fixture hit real rescue endpoints.
+    'web': {'extract_backend': 'ai-lab-native', 'keyless_rescue': False},
     'plugins': {'entries': {'ai-lab-capabilities': {'settings': {
         'research_deposit': {'enabled': False, 'deployment_mode': 'cloud_multi_tenant'}
     }}}}

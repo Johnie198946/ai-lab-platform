@@ -10,7 +10,7 @@ This native override takes precedence over the generated web-oriented Master fil
 - Preserve the official Quantum cyan → blue → violet brand spectrum. Pink is not used as a structural CTA color.
 - The supplied transparent Quantum mark is the visual focal point. Never place it inside a second decorative circle or add glow behind it.
 - Use the full gradient only for the brand mark and rare moments of emphasis. Primary controls use a stable single blue.
-- Support light and dark appearance equally; dark mode uses graphite surfaces, never pure black.
+- Ship light appearance only for Quantum 2.0; UIKit and SwiftUI roots both force Light.
 
 ## Native tokens
 
