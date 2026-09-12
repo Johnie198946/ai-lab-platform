@@ -28,14 +28,16 @@
 
 ## Delivery
 
-- local_commit: pending
-- remote_sha: pending
-- server_before: `0ed5a532d0fa59a82c518eeb7b3148aa00637828`
-- server_after: pending
+- implementation_commit: `3a0bc6e65b4a2b7aba66164b740035cce60ca864`
+- remote_sha: GitHub `refs/heads/main` was read back as `3a0bc6e65b4a2b7aba66164b740035cce60ca864` after push.
+- server_before: production changed concurrently from the initially observed `0ed5a532d0fa59a82c518eeb7b3148aa00637828` to an unpushed composite release `977e07776e1a8c1e68cfa69c74cb1ffbe82767a8`. A full exact-SHA deployment was stopped because codeload returned 404 and replacing the composite release would have overwritten unrelated runtime work.
+- server_after: the composite release remains `/opt/releases/ai-lab-platform-977e07776e1a.ruR4f8`; only the two tested authentication files were injected through an offline child image, `sha256:3329277fa511045a36bcc4f6a0161fcc5da801d82fc1e31292e984563717e825`.
+- source verification: running container hashes match GitHub commit `3a0bc6e…`: `external_auth.py=d548b29e…`, `register.py=e69282f1…`.
 - rollback_point:
-  - application: current production release before deployment
+  - API files and prior image: `/opt/ai-lab-shared/backups/sms-auth-hotfix-20260912T113018+0800`
   - Authen environment: `/opt/ai-lab-shared/backups/authen-sms-20260912T112228+0800.env`
   - developer-login environment: `/opt/ai-lab-shared/backups/dev-login-ip-20260912T061237+0800.env`
-- health_check: pending
-- functional_check: pending new SMS code, login, agreement acceptance, authenticated profile, and restart persistence
-- remaining_risks: Aliyun billing/quota and sign/template policy remain external provider dependencies; no credential material is retained in source history.
+- health_check: after explicit Authen restart and API container recreation, `authen@auth.service=active`, API container `healthy`, public `/health` HTTP 200, and public capabilities HTTP 200 with `phone.enabled=true`, `reason=configured`.
+- functional_check: build 32 sent a real SMS at 16:10:18; Authen accepted the supplied code at 16:10:28; platform phone login, agreement acceptance, authenticated profile, knowledge-note load and subsequent profile refresh all returned HTTP 200. A replay at 16:10:57 returned HTTP 401, verifying one-time consumption.
+- status: `VERIFIED` for the production SMS authentication path.
+- remaining_risks: the unrelated `977e…` composite production release is not a GitHub object and must be reconciled separately before the whole platform can again claim exact-SHA deployment. Aliyun billing/quota and sign/template policy remain external provider dependencies. The downloaded credential CSV remains owner-controlled local material and is not stored in Git.
