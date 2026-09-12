@@ -689,14 +689,15 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
     }
 
     func testDailyPublicationDTOFieldsDecode() throws {
-        let data = Data(#"{"id":"publication-1","title":"第一期","author":"Quantumn","summary":"测试","security_level":"green","knowledge_level":"editorial","freshness":"daily","source_count":1,"series_id":"ai-history","series_title":"AI的前世今生","issue_id":"issue-1","issue_date":"2026-09-08","test_serial":true,"release_at":"2026-09-08T04:00:00+00:00","actual_release_at":"2026-09-08T04:00:01+00:00","edition_id":"edition-1","edition":1,"source_urls":["https://example.com/source"],"publication_format":"chapter","completeness":"full"}"#.utf8)
+        let data = Data(#"{"id":"publication-1","title":"第一期","author":"Quantumn","summary":"测试","security_level":"green","knowledge_level":"editorial","freshness":"daily","source_count":1,"series_id":"ai-history","series_title":"AI的前世今生","issue_id":"issue-1","issue_date":"2026-09-08","test_serial":true,"release_at":"2026-09-08T04:00:00+00:00","actual_release_at":"2026-09-08T04:00:01+00:00","edition_id":"edition-1","edition":1,"source_urls":["https://example.com/source"],"publication_format":"chapter","editorial_genre":"popular_science","completeness":"full"}"#.utf8)
         let book = try decoder().decode(KnowledgeBookDTO.self, from: data)
         XCTAssertEqual(book.seriesId, "ai-history")
         XCTAssertEqual(book.issueDate, "2026-09-08")
         XCTAssertEqual(book.testSerial, true)
         XCTAssertEqual(book.sourceUrls, ["https://example.com/source"])
         XCTAssertEqual(book.publicationFormat, "chapter")
-        XCTAssertEqual(book.publicationTypeLabel, "连载章节")
+        XCTAssertEqual(book.editorialGenre, "popular_science")
+        XCTAssertEqual(book.publicationTypeLabel, "科普 · 连载章节")
     }
 
     func testPublicationFormatLabelsDoNotInferFromCompleteness() throws {

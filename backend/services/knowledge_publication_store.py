@@ -16,7 +16,10 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from markdown_it import MarkdownIt
-from backend.services.publication_editorial import editorial_target_hash, make_editorial_contract, validate_editorial
+from backend.services.publication_editorial import (
+    editorial_target_hash, make_editorial_contract, validate_editorial,
+    validate_editorial_brief,
+)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 SERIES = {
@@ -666,12 +669,18 @@ class PublicationStore:
         if not isinstance(draft, dict):
             raise PublicationError("quality_contract draft required")
         _, issue_id, _ = self.ids(normalized["series_id"], normalized["issue_key"], 1)
-        options = {k: draft.get(k) for k in ("format", "writer_sessions", "learning_objectives", "research_gaps")}
+        options = {k: draft.get(k) for k in (
+            "format", "writer_sessions", "learning_objectives", "editorial_brief", "research_gaps",
+        )}
         if (not isinstance(options["format"], str) or options["format"] not in {"book", "chapter"}
                 or not isinstance(options["writer_sessions"], list) or not options["writer_sessions"]
                 or any(not isinstance(w, str) or not w.startswith("hermes:") for w in options["writer_sessions"])
                 or not isinstance(options["learning_objectives"], list) or not options["learning_objectives"]
                 or any(not isinstance(o, str) or len(o.strip()) < 10 for o in options["learning_objectives"])
+                or validate_editorial_brief(options["editorial_brief"])
+                or not set(options["editorial_brief"].get("evidence_urls", [])) <= {
+                    item["url"] for item in normalized["references"]
+                }
                 or not isinstance(options["research_gaps"], (list, type(None)))):
             raise PublicationError("invalid editorial draft options")
         db = self._connect()
@@ -1127,7 +1136,12 @@ class PublicationStore:
         kind = value["bundle"].get("content_kind")
         value["publication_format"] = ("source" if kind == "source_index" else
                                        (value["bundle"].get("quality_contract") or {}).get("format", "article"))
-        value["publication_type_label"] = {"book": "书籍", "chapter": "章节", "article": "文章", "source": "来源元数据"}.get(value["publication_format"], "文章")
+        genre = (value["bundle"].get("quality_contract") or {}).get("editorial_brief", {}).get("genre")
+        value["editorial_genre"] = genre
+        genre_label = {"tutorial": "教程", "research_report": "研究报告", "popular_science": "科普",
+                       "feature": "趣味文章", "critical_essay": "观点文章"}.get(genre)
+        format_label = {"book": "完整书", "chapter": "连载章节", "article": "历史短文", "source": "来源元数据"}.get(value["publication_format"], "文章")
+        value["publication_type_label"] = f"{genre_label} · {format_label}" if genre_label else format_label
         value["blocked_reasons"] = json.loads(value["blocked_reasons"])
         if body:
             value.update({"body": self._path(value["body_ref"], ".md").read_text(encoding="utf-8"), "artifact_valid": True})

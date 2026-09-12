@@ -3,6 +3,13 @@
   "daily_release_time": "12:00:00",
   "test_serial": true,
   "free_subscription": true,
+  "editorial_selection": {
+    "genres": ["tutorial", "research_report", "popular_science", "feature", "critical_essay"],
+    "candidate_sources": ["follow_builders", "authorized_wiki", "published_catalog", "open_research_gaps"],
+    "destinations": ["ai-history", "ai-practice", "quantumn-originals"],
+    "publish_nothing_when_no_reader_value": true,
+    "required_brief": true
+  },
   "series": [
     {
       "id": "ai-history",
@@ -38,7 +45,7 @@
     "schedule": "0 8,14,18 * * *",
     "no_agent": false,
     "prompt_template": "docs/prompts/quantumn-editorial-v2.md",
-    "required_issue_count": 2
+    "max_issue_count": 2
   },
   "release_job": {
     "schedule": "0 12 * * *",
@@ -47,7 +54,7 @@
     "finalize_native_review_before_release": true
   },
   "editorial_contract": {
-    "protocol": "editorial-v1",
+    "protocol": "editorial-v2",
     "prompt": "docs/prompts/quantumn-editorial-v2.md",
     "automatic_format": "chapter",
     "book_min_effective_cjk": 20000,

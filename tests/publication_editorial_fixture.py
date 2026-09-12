@@ -7,11 +7,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from backend.services.publication_editorial import BOOK_CHECKS, CHAPTER_CHECKS, editorial_metrics, validate_editorial
+from test_publication_editorial import synthetic_brief
 
 
 def approve_fixture(store, value, *, record=True, draft=None):
     draft = draft or {"format": "chapter", "writer_sessions": ["hermes:synthetic-writer"],
-             "learning_objectives": ["本契约仅测试格式及签名门禁，不代表真实出版内容"], "research_gaps": []}
+             "learning_objectives": ["本契约仅测试格式及签名门禁，不代表真实出版内容"],
+             "editorial_brief": synthetic_brief(), "research_gaps": []}
     value["quality_contract"] = draft
     attempt = store.prepare_editorial(value)
     contract = value["quality_contract"] = attempt["quality_contract"]

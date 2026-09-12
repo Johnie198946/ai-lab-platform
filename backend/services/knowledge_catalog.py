@@ -996,6 +996,7 @@ def publication_book(item: dict[str, Any]) -> dict[str, Any]:
         "test_serial": SERIES[item["series_id"]]["kind"] == "daily", "release_at": item["release_at"],
         "publication_format": item["publication_format"],
         "publication_type_label": item["publication_type_label"],
+        "editorial_genre": item.get("editorial_genre"),
         "actual_release_at": item["actual_release_at"], "edition_id": item["edition_id"],
         "edition": item["edition"], "source_urls": [ref["url"] for ref in bundle["references"]],
         "content_version": item["content_hash"],

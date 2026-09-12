@@ -243,13 +243,16 @@ public struct KnowledgeBookDTO: Codable, Identifiable, Hashable {
     public var bodyOrigin: String? = nil
     public var completeness: String? = nil
     public var publicationFormat: String? = nil
+    public var editorialGenre: String? = nil
     public var sourceClassification: String? = nil
     public var readable: Bool? = nil
     public var unavailableReason: String? = nil
 
     public var isBodyUnavailable: Bool { readable == false || contentStatus == "metadata_only" }
     public var publicationTypeLabel: String? {
-        ["book": "完整书", "chapter": "连载章节", "article": "历史短文", "source": "资料来源"][publicationFormat ?? ""]
+        let format = ["book": "完整书", "chapter": "连载章节", "article": "历史短文", "source": "资料来源"][publicationFormat ?? ""]
+        let genre = ["tutorial": "教程", "research_report": "研究报告", "popular_science": "科普", "feature": "趣味文章", "critical_essay": "观点文章"][editorialGenre ?? ""]
+        return genre.map { "\($0) · \(format ?? "文章")" } ?? format
     }
     public var canonicalHTTPURL: URL? {
         guard let canonicalUrl, let url = URL(string: canonicalUrl),

@@ -21,7 +21,7 @@ from backend.services.publication_editorial import (
     CHAPTER_CHECKS,
     editorial_metrics,
 )
-from test_publication_editorial import synthetic_fixture
+from test_publication_editorial import synthetic_brief, synthetic_fixture
 
 
 def fixture_bundle():
@@ -127,6 +127,7 @@ def flow(tmp_path, monkeypatch):
         "format": "chapter",
         "writer_sessions": ["hermes:writer"],
         "learning_objectives": ["仅用于自动测试的独立原生会话与完整稿件绑定协议"],
+        "editorial_brief": synthetic_brief(),
         "research_gaps": [],
     }
     relay.save(local / "bundle.json", body)

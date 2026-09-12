@@ -18,6 +18,7 @@ def test_new_contract_survives_admin_dto_and_public_projection(tmp_path):
     assert len(items) == 1
     public = _public_book(publication_book(items[0]))
     assert public['publication_format'] == 'chapter'
+    assert public['publication_type_label'] == '科普 · 连载章节'
     assert public['content_version'] == value['body_hash']
     assert public['test_serial'] is True
 

@@ -332,7 +332,7 @@ _PUBLIC_BOOK_FIELDS = (
     "published", "institution", "group_label",
     "source_id", "body_origin", "completeness", "source_classification",
     "readable", "unavailable_reason", "content_version",
-    "publication_format", "publication_type_label",
+    "publication_format", "publication_type_label", "editorial_genre",
 )
 
 

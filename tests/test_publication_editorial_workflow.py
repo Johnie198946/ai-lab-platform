@@ -11,13 +11,15 @@ import pytest
 
 from backend.services.knowledge_publication_store import PublicationError, PublicationStore
 from test_daily_publication import at, bundle, ready
+from test_publication_editorial import synthetic_brief
 
 
 def draft(store, body=None):
     # Explicitly short draft: intake only, never an approved fixture.
     value = ready(store, bundle(body=body or "## 待补研\n\n合成短稿。"), editorial=False)
     value["quality_contract"] = {"format": "chapter", "writer_sessions": ["hermes:synthetic-writer"],
-        "learning_objectives": ["仅供合成测试验证契约结构，不代表真实内容质量"], "research_gaps": []}
+        "learning_objectives": ["仅供合成测试验证契约结构，不代表真实内容质量"],
+        "editorial_brief": synthetic_brief(), "research_gaps": []}
     return value
 
 
@@ -88,6 +90,14 @@ def test_caller_cannot_assign_revision(tmp_path):
         store.prepare_editorial(value)
 
 
+def test_editorial_brief_evidence_must_be_a_declared_reference(tmp_path):
+    store = PublicationStore(tmp_path)
+    value = draft(store)
+    value["quality_contract"]["editorial_brief"]["evidence_urls"] = ["https://example.org/not-declared"]
+    with pytest.raises(PublicationError, match="invalid editorial draft options"):
+        store.prepare_editorial(value)
+
+
 def test_new_pending_invalidates_prior_approved_and_reversion(tmp_path):
     store = PublicationStore(tmp_path)
     value = ready(store, bundle())
@@ -99,7 +109,7 @@ def test_new_pending_invalidates_prior_approved_and_reversion(tmp_path):
     assert "editorial_attempt_not_current" in store.stage(value, now=at(3))["blocked_reasons"]
     reject(store, next_value, next_attempt)
     reverted = {**value, "quality_contract": {k: value["quality_contract"][k] for k in
-        ("format", "writer_sessions", "learning_objectives", "research_gaps")}}
+        ("format", "writer_sessions", "learning_objectives", "editorial_brief", "research_gaps")}}
     attempt = store.prepare_editorial(reverted)
     assert attempt["state"] == "await_review" and attempt["revision"] == 3
     reverted["quality_contract"] = attempt["quality_contract"]

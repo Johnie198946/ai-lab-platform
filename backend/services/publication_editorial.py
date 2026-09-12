@@ -24,7 +24,17 @@ MAX_DUPLICATE_RATIO = 0.15
 MIN_QUOTE_LENGTH = 20
 MIN_FINDING_LENGTH = 30
 CHAPTER_CHECKS = ("mechanism", "worked_example", "limits", "reader_questions", "evidence")
-BOOK_CHECKS = ("coherence", "non_redundancy", "novice_readability")
+BOOK_CHECKS = (
+    "coherence", "non_redundancy", "novice_readability", "thesis",
+    "counterargument", "uncertainty", "reader_value", "genre_fit",
+)
+EDITORIAL_GENRES = {
+    "tutorial", "research_report", "popular_science", "feature", "critical_essay",
+}
+EDITORIAL_BRIEF_FIELDS = {
+    "genre", "question", "thesis", "reader_value", "novelty", "counterargument",
+    "uncertainties", "evidence_urls", "selection_reason",
+}
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 _NON_BODY = re.compile(r"^(?:前言|序言|序|目录|来源|参考(?:资料|文献)?|引用|附录|致谢|preface|contents|references|sources|bibliography|appendix)(?:\s|[:：、.\-]|$)", re.I)
@@ -134,15 +144,17 @@ def editorial_target_hash(body: str, contract: dict, source_receipts=None) -> st
 
 def make_editorial_contract(body: str, *, format: str, writer_sessions: list[str],
                             revision: int, learning_objectives: list[str],
+                            editorial_brief: dict,
                             research_gaps=None, previous_body_hash=None,
                             source_receipts=None, issue_id=None, attempt_id=None) -> dict:
     """Generate a hash-bound DRAFT, including every measured chapter.
     Validate after generation; this helper intentionally does not manufacture
     review findings, approvals, source receipts or authenticated session IDs.
     """
-    contract = {"version": "editorial-v1", "format": format,
+    contract = {"version": "editorial-v2", "format": format,
                 "writer_sessions": writer_sessions, "revision": revision,
                 "learning_objectives": learning_objectives,
+                "editorial_brief": editorial_brief,
                 "chapters": [{k: c[k] for k in ("id", "title", "body_hash")}
                              for c in editorial_metrics(body)["chapters"]],
                 "research_gaps": [] if research_gaps is None else research_gaps}
@@ -166,6 +178,30 @@ def _https(value):
         return False
 
 
+def validate_editorial_brief(value) -> list[str]:
+    """Mechanical shape checks; the independent reviewer judges the argument."""
+    if not isinstance(value, dict) or set(value) != EDITORIAL_BRIEF_FIELDS:
+        return ["contract.editorial_brief"]
+    reasons = set()
+    if value.get("genre") not in EDITORIAL_GENRES:
+        reasons.add("contract.editorial_brief.genre")
+    for field, minimum in {
+        "question": 10, "thesis": 30, "reader_value": 20, "novelty": 20,
+        "counterargument": 20, "selection_reason": 20,
+    }.items():
+        if not _text(value.get(field), minimum):
+            reasons.add(f"contract.editorial_brief.{field}")
+    uncertainties = value.get("uncertainties")
+    if (not isinstance(uncertainties, list) or not uncertainties or len(uncertainties) > 10
+            or any(not _text(item, 10) for item in uncertainties)):
+        reasons.add("contract.editorial_brief.uncertainties")
+    urls = value.get("evidence_urls")
+    if (not isinstance(urls, list) or not urls or len(urls) > 20
+            or len(urls) != len(set(urls)) or any(not _https(url) for url in urls)):
+        reasons.add("contract.editorial_brief.evidence_urls")
+    return sorted(reasons)
+
+
 def validate_editorial(body, contract, review=None, source_receipts=None) -> list[str]:
     """Sorted unique reason codes; [] means prerequisites only, NOT publication
     authorization. Requires a review, but cannot authenticate its claimed author.
@@ -177,14 +213,16 @@ def validate_editorial(body, contract, review=None, source_receipts=None) -> lis
     metrics = editorial_metrics(body)
     if not isinstance(contract, dict):
         return ["contract.invalid"]
-    required = {"version", "format", "writer_sessions", "revision", "learning_objectives", "chapters", "research_gaps", "target_hash"}
+    required = {"version", "format", "writer_sessions", "revision", "learning_objectives",
+                "editorial_brief", "chapters", "research_gaps", "target_hash"}
     if not required <= contract.keys() or contract.keys() - required - {"previous_body_hash", "issue_id", "attempt_id"}:
         reasons.add("contract.fields")
     for field in ("issue_id", "attempt_id"):
         if field in contract and not _text(contract[field]):
             reasons.add(f"contract.{field}")
-    if contract.get("version") != "editorial-v1":
+    if contract.get("version") != "editorial-v2":
         reasons.add("contract.version")
+    reasons.update(validate_editorial_brief(contract.get("editorial_brief")))
     fmt = contract.get("format")
     if fmt not in ("book", "chapter"):
         reasons.add("contract.format")

@@ -11,8 +11,22 @@ import pytest
 
 from backend.services.publication_editorial import (
     BOOK_CHECKS, CHAPTER_CHECKS, editorial_metrics, editorial_target_hash,
-    make_editorial_contract, validate_editorial,
+    make_editorial_contract, validate_editorial, validate_editorial_brief,
 )
+
+
+def synthetic_brief(genre="popular_science"):
+    return {
+        "genre": genre,
+        "question": "为什么这个合成主题值得非技术读者现在投入时间理解？",
+        "thesis": "合成测试论点只用于验证原创判断会与正文和来源共同绑定，不能代表真实编辑结论。",
+        "reader_value": "读者可据此检查选题是否提供明确的新理解或下一步行动。",
+        "novelty": "相对已有目录，本测试只新增合同结构与目标哈希绑定的验证。",
+        "counterargument": "一种反方意见认为机械字段齐全并不能证明文章真的专业或有洞见。",
+        "uncertainties": ["确定性验证器无法独立判断论点的新颖性与事实质量。"],
+        "evidence_urls": ["https://example.com/source"],
+        "selection_reason": "选择此题仅因为它能以最小样本覆盖新的主编选题合同。",
+    }
 
 
 def synthetic_fixture(format="book"):
@@ -28,7 +42,7 @@ def synthetic_fixture(format="book"):
     contract = make_editorial_contract(
         body, format=format, writer_sessions=["hermes:synthetic-writer"], revision=1,
         learning_objectives=["仅供合成测试验证契约结构，不代表真实内容质量"],
-        research_gaps=[], source_receipts=receipts,
+        editorial_brief=synthetic_brief(), research_gaps=[], source_receipts=receipts,
     )
     review = {
         "editorial_target_hash": contract["target_hash"],
@@ -108,7 +122,7 @@ def test_duplicate_normalization_and_global_chapter_dedupe():
 def test_short_padding_and_no_subheading_chapter_inflation():
     body = "## 正文\n\n短文。\n\n" + ("### 标题汉字\n\n" * 50) + "```\n" + "填充" * 20000 + "\n```\n"
     c = make_editorial_contract(body, format="book", writer_sessions=["writer"], revision=1,
-                                learning_objectives=["理解此合成测试的限制与目标"])
+                                learning_objectives=["理解此合成测试的限制与目标"], editorial_brief=synthetic_brief())
     reasons = validate_editorial(body, c)
     assert {"quality.chapter_count", "quality.effective_cjk", "review.required"} <= set(reasons)
     assert len(editorial_metrics(body)["chapters"]) == 1
@@ -122,14 +136,14 @@ def test_missing_chapter_short_chapter_and_duplicate_reject():
     # Entire-paragraph dedupe cannot detect paraphrases/repeated fragments.
     repeated = "## 第一章\n\n" + ("重复正文。\n\n" * 1000)
     c2 = make_editorial_contract(repeated, format="chapter", writer_sessions=["writer"], revision=1,
-                                 learning_objectives=["理解此合成测试的限制与目标"])
+                                 learning_objectives=["理解此合成测试的限制与目标"], editorial_brief=synthetic_brief())
     assert "quality.duplicate_ratio" in validate_editorial(repeated, c2)
     assert "quality.chapter_length:chapter-001" in validate_editorial(repeated, c2)
 
 
 @pytest.mark.parametrize("field,value,reason", [
     ("format", "article", "contract.format"),
-    ("version", "editorial-v2", "contract.version"),
+    ("version", "editorial-v1", "contract.version"),
     ("revision", True, "contract.revision"),
     ("revision", 1.0, "contract.revision"),
     ("previous_body_hash", "SHA256:bad", "contract.previous_body_hash"),
@@ -158,6 +172,21 @@ def test_hash_binds_format_body_objectives_chapters_and_receipts():
     altered = {**c, "format": "book"}
     altered["target_hash"] = editorial_target_hash(body, altered, receipts)
     assert "review.target_hash" in validate_editorial(body, altered, r, receipts)
+
+
+def test_editorial_brief_is_required_hash_bound_and_structured():
+    body, contract, review, receipts = synthetic_fixture("chapter")
+    assert validate_editorial_brief(contract["editorial_brief"]) == []
+    for mutation, reason in [
+        ({"genre": "summary"}, "contract.editorial_brief"),
+        ({**synthetic_brief(), "genre": "summary"}, "contract.editorial_brief.genre"),
+        ({**synthetic_brief(), "thesis": "摘要"}, "contract.editorial_brief.thesis"),
+        ({**synthetic_brief(), "uncertainties": []}, "contract.editorial_brief.uncertainties"),
+        ({**synthetic_brief(), "evidence_urls": ["http://example.org"]}, "contract.editorial_brief.evidence_urls"),
+    ]:
+        changed = {**contract, "editorial_brief": mutation}
+        reasons = validate_editorial(body, changed, review, receipts)
+        assert reason in reasons and "contract.target_hash" in reasons
 
 
 @pytest.mark.parametrize("session", ["hermes:synthetic-writer", "other:reviewer", "hermes:", True])
@@ -237,7 +266,7 @@ def test_front_matter_cannot_satisfy_chapter_length():
     prose = editorial_metrics(body)["chapters"][0]["paragraphs"][0]
     body = f"{prose}\n\n## 正文章\n\n少量正文。\n\n## **参考文献**\n\n{prose}\n"
     c = make_editorial_contract(body, format="chapter", writer_sessions=["writer"], revision=1,
-                                learning_objectives=["理解此合成测试的限制与目标"])
+                                learning_objectives=["理解此合成测试的限制与目标"], editorial_brief=synthetic_brief())
     metrics = editorial_metrics(body)
     assert len(metrics["chapters"]) == 1
     assert metrics["total_cjk"] == len(prose) + 4
@@ -251,7 +280,7 @@ def test_minimums_are_constants_and_not_environment(monkeypatch):
     prose = editorial_metrics(body)["chapters"][0]["paragraphs"][0]
     body = body.replace(prose, prose[:2999])
     c = make_editorial_contract(body, format="chapter", writer_sessions=["writer"], revision=1,
-                                learning_objectives=["理解此合成测试的限制与目标"])
+                                learning_objectives=["理解此合成测试的限制与目标"], editorial_brief=synthetic_brief())
     assert "quality.chapter_length:chapter-001" in validate_editorial(body, c)
 
 
