@@ -687,11 +687,13 @@ def test_save_request_without_knowledge_action_fails_closed(monkeypatch, tmp_pat
     emitted = []
     while not events.empty():
         emitted.append(events.get_nowait())
-    assert emitted[-1] == {
+    terminal = emitted[-1]
+    assert {key: terminal[key] for key in ("type", "code", "message")} == {
         "type": "error",
         "code": "knowledge_action_missing",
         "message": "未生成可确认的笔记操作方案，请重试。",
     }
+    assert terminal["usage"]["usage_available"] is False
     assert not any(item.get("type") == "done" for item in emitted)
 
 

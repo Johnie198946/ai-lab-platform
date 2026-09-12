@@ -334,8 +334,20 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
         _run_context.run_id = ""
 
 
+def _recover_accounting(store: DurableChatRunStore) -> None:
+    from backend.services.durable_usage_recovery import recover_usage_receipts
+    try:
+        with _placement_loop_lock:
+            _placement_loop.run_until_complete(recover_usage_receipts(store.path))
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Durable accounting recovery failed; will retry")
+
+
 def main() -> None:
     store = DurableChatRunStore(RUN_DB)
+    from backend.services.durable_usage_recovery import initialize_usage_recovery
+    initialize_usage_recovery(store.path)
     bridge._chat_run_store = store
     gateway = DurableClarifyGateway(store)
     bridge._get_clarify_gateway = lambda: gateway
@@ -345,13 +357,16 @@ def main() -> None:
     futures = set()
     next_recovery = 0.0
     next_heartbeat = 0.0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="durable-chat") as pool:
+    accounting_future = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="usage-recovery") as accounting_pool, ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="durable-chat") as pool:
         while True:
             now = time.time()
             if now >= next_heartbeat:
                 store.worker_heartbeat(WORKER_ID)
                 next_heartbeat = now + WORKER_HEARTBEAT_SECONDS
             if now >= next_recovery:
+                if accounting_future is None or accounting_future.done():
+                    accounting_future = accounting_pool.submit(_recover_accounting, store)
                 store.recover_after_restart()
                 next_recovery = now + 30
             futures = {future for future in futures if not future.done()}

@@ -88,9 +88,38 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_book_subscription_version)
         await conn.run_sync(_migrate_showroom_epoch_bigint)
         await conn.run_sync(_migrate_feedback_digest_columns)
+        await conn.run_sync(_migrate_llm_usage_identity)
         await conn.run_sync(_migrate_workspace_delivery_contract)
         await conn.run_sync(_migrate_workspace_intent_columns)
     await _backfill_workspace_intent_drafts()
+
+
+def _migrate_llm_usage_identity(connection) -> None:
+    """Add nullable identity/detail fields; never infer historical request links."""
+    schema = inspect(connection)
+    if "llm_usage_records" not in schema.get_table_names():
+        return
+    if "inference_reservations" in schema.get_table_names():
+        columns = {item["name"] for item in schema.get_columns("inference_reservations")}
+        if "usage_prefix" not in columns:
+            connection.exec_driver_sql("ALTER TABLE inference_reservations ADD COLUMN usage_prefix JSON")
+        if "usage_corrections" not in columns:
+            connection.exec_driver_sql("ALTER TABLE inference_reservations ADD COLUMN usage_corrections JSON")
+    existing = {item["name"] for item in schema.get_columns("llm_usage_records")}
+    for name, definition in {
+        "request_id": "VARCHAR(100)",
+        "cache_read_tokens": "BIGINT",
+        "cache_write_tokens": "BIGINT",
+        "reasoning_tokens": "BIGINT",
+    }.items():
+        if name not in existing:
+            connection.exec_driver_sql(
+                f"ALTER TABLE llm_usage_records ADD COLUMN {name} {definition}"
+            )
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_usage_request "
+        "ON llm_usage_records (user_id, request_id)"
+    )
 
 
 def _migrate_book_subscription_version(connection) -> None:

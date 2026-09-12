@@ -119,6 +119,8 @@ public struct UsageDailyDTO: Codable, Identifiable, Hashable {
     public let calls: Int
     public let inputTokens: Int
     public let outputTokens: Int
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
     public let totalTokens: Int
 }
 
@@ -129,6 +131,8 @@ public struct UsageModelDTO: Codable, Identifiable, Hashable {
     public let calls: Int
     public let inputTokens: Int
     public let outputTokens: Int
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
     public let totalTokens: Int
     public let missingUsageCalls: Int
 }
@@ -140,11 +144,52 @@ public struct UsageSummaryDTO: Codable, Hashable {
     public let failedCalls: Int
     public let inputTokens: Int
     public let outputTokens: Int
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
     public let totalTokens: Int
     public let missingUsageCalls: Int
+    public let tokenTotalBasis: String?
+    public let legacyUnverifiedTotalTokens: Int?
+    public let legacyUnverifiedCalls: Int?
+    public let unverifiedCalls: Int?
+    public let reconciliationRequired: Bool?
+    public let usageState: String?
     public let daily: [UsageDailyDTO]
     public let models: [UsageModelDTO]
     public let quota: TokenQuotaDTO?
+
+    public var hasVerifiedTokenBasis: Bool { tokenTotalBasis == "verified_requests_only" }
+
+    public var usageTitle: String {
+        hasVerifiedTokenBasis ? "已核验用量" : "服务端用量账本"
+    }
+
+    public var usagePeriodCaption: String {
+        "近 \(days) 天\(hasVerifiedTokenBasis ? "已核验用量" : "账本记录")"
+    }
+
+    public var coverageNotices: [String] {
+        guard hasVerifiedTokenBasis else {
+            return ["当前服务未标注核验口径；该数值仅为服务端用量账本"]
+        }
+
+        var notices: [String] = []
+        if let legacyUnverifiedCalls, legacyUnverifiedCalls > 0 {
+            notices.append("\(legacyUnverifiedCalls) 次历史记录待核验、不计入该数值")
+        }
+        if missingUsageCalls > 0 {
+            notices.append("\(missingUsageCalls) 次调用缺少 Token usage，未计入该数值")
+        }
+
+        let unverified = unverifiedCalls ?? 0
+        if totalCalls > 0, unverified >= totalCalls {
+            notices.append("当前范围没有已核验覆盖；0 仅表示已核验子集，不代表整体用量为 0")
+        } else if usageState == "partial" || reconciliationRequired == true || unverified > 0 {
+            let count = unverified > 0 ? "\(unverified) 次" : "部分"
+            notices.append("当前范围仅部分调用已核验；\(count)未核验调用不计入该数值")
+        }
+        return notices
+    }
 }
 
 public struct TokenQuotaDTO: Codable, Hashable {
@@ -3579,7 +3624,7 @@ public final class APIClient: ObservableObject {
         return (resp.chatCalls, resp.tokenUsed)
     }
 
-    /// GET /api/v1/usage/summary — 当前登录用户的真实 LLM 用量。
+    /// GET /api/v1/usage/summary — 当前登录用户的服务端 LLM 用量账本。
     public func fetchUsageSummary(days: Int = 30) async throws -> UsageSummaryDTO {
         var components = URLComponents(
             url: baseURL

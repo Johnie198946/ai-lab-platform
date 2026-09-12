@@ -2,7 +2,7 @@
 //  TokenSummaryCard.swift
 //  AIPlatformApp
 //
-//  真实 Token 用量：GET /api/v1/usage/summary?days=7|30|90
+//  服务端 Token 用量账本：GET /api/v1/usage/summary?days=7|30|90
 //
 
 import SwiftUI
@@ -12,8 +12,17 @@ public struct TokenSummaryCard: View {
     @State private var summary: UsageSummaryDTO?
     @State private var isLoading = false
     @State private var loadError: String?
+    private let loadsRemotely: Bool
 
-    public init() {}
+    public init() {
+        loadsRemotely = true
+    }
+
+    init(summary: UsageSummaryDTO, selectedDays: Int = 30) {
+        _selectedDays = State(initialValue: selectedDays)
+        _summary = State(initialValue: summary)
+        loadsRemotely = false
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
@@ -25,12 +34,12 @@ public struct TokenSummaryCard: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(AppTheme.Colors.textPrimary)
                 Spacer()
-                Text("服务端账本")
+                Text(summary?.usageTitle ?? "服务端用量账本")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(AppTheme.Colors.securityGreen)
+                    .foregroundColor(AppTheme.Colors.textPrimary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(AppTheme.Colors.securityGreen.opacity(0.12))
+                    .background(AppTheme.Colors.securityYellow.opacity(0.12))
                     .clipShape(Capsule())
             }
 
@@ -44,7 +53,7 @@ public struct TokenSummaryCard: View {
             if isLoading && summary == nil {
                 HStack {
                     Spacer()
-                    ProgressView("正在加载真实用量…")
+                    ProgressView("正在加载用量账本…")
                     Spacer()
                 }
                 .frame(minHeight: 180)
@@ -70,6 +79,7 @@ public struct TokenSummaryCard: View {
         }
         .pressBorderGlow(cornerRadius: AppTheme.Radius.xl)
         .task(id: selectedDays) {
+            guard loadsRemotely else { return }
             await loadUsage()
         }
     }
@@ -77,6 +87,16 @@ public struct TokenSummaryCard: View {
     @ViewBuilder
     private func usageContent(_ summary: UsageSummaryDTO) -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            ForEach(summary.coverageNotices, id: \.self) { notice in
+                Label(notice, systemImage: "exclamationmark.triangle.fill")
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+                    .padding(AppTheme.Spacing.sm)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.securityYellow.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+            }
+
             quotaPanel(summary.quota)
 
             Divider()
@@ -87,7 +107,7 @@ public struct TokenSummaryCard: View {
                         .font(.system(size: 38, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("近 \(selectedDays) 天实际消耗")
+                    Text(summary.usagePeriodCaption)
                         .font(AppTheme.Typography.micro)
                         .foregroundColor(AppTheme.Colors.textTertiary)
                 }
@@ -105,6 +125,11 @@ public struct TokenSummaryCard: View {
                 tokenMetric("输出", summary.outputTokens)
             }
 
+            HStack(spacing: AppTheme.Spacing.sm) {
+                tokenMetric("缓存读取", summary.cacheReadTokens)
+                tokenMetric("缓存写入", summary.cacheWriteTokens)
+            }
+
             if summary.totalCalls == 0 {
                 Label("近 \(selectedDays) 天暂无调用记录", systemImage: "chart.bar.xaxis")
                     .font(AppTheme.Typography.supporting)
@@ -112,15 +137,6 @@ public struct TokenSummaryCard: View {
                     .frame(maxWidth: .infinity, minHeight: 72)
             } else {
                 dailyChart(summary.daily)
-            }
-
-            if summary.missingUsageCalls > 0 {
-                Label(
-                    "\(summary.missingUsageCalls) 次调用未返回 Token usage，未计入 Token 总量",
-                    systemImage: "info.circle"
-                )
-                .font(AppTheme.Typography.micro)
-                .foregroundColor(AppTheme.Colors.textSecondary)
             }
 
             if !summary.models.isEmpty {
@@ -157,10 +173,10 @@ public struct TokenSummaryCard: View {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(quota.isExhausted ? "本月额度已用尽" : "本月额度")
+                        Text(quota.isExhausted ? "本月额度账本已用尽" : "本月额度账本占用")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundColor(AppTheme.Colors.textPrimary)
-                        Text("每个自然月重置")
+                        Text("额度账本按自然月重置")
                             .font(AppTheme.Typography.micro)
                             .foregroundColor(AppTheme.Colors.textTertiary)
                     }
@@ -186,7 +202,7 @@ public struct TokenSummaryCard: View {
                 .accessibilityValue("已使用 \(percent(quota.percentUsed))，剩余 \(grouped(quota.remainingTokens)) Token")
 
                 HStack(alignment: .top) {
-                    quotaMetric("已用", quota.usedTokens, accent: accent)
+                    quotaMetric("账本已占用", quota.usedTokens, accent: accent)
                     Spacer()
                     quotaMetric("总额度", quota.limitTokens, accent: AppTheme.Colors.textPrimary)
                         .multilineTextAlignment(.trailing)
@@ -211,7 +227,7 @@ public struct TokenSummaryCard: View {
                     .stroke(accent.opacity(0.24), lineWidth: 0.75)
             }
         } else {
-            Label("当前服务未返回额度信息，仅展示实际 Token 用量", systemImage: "info.circle")
+            Label("当前服务未返回额度信息，仅展示服务端 Token 账本", systemImage: "info.circle")
                 .font(AppTheme.Typography.supporting)
                 .foregroundColor(AppTheme.Colors.textSecondary)
         }
@@ -248,12 +264,12 @@ public struct TokenSummaryCard: View {
         return display.string(from: date)
     }
 
-    private func tokenMetric(_ title: String, _ value: Int) -> some View {
+    private func tokenMetric(_ title: String, _ value: Int?) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
                 .font(AppTheme.Typography.micro)
                 .foregroundColor(AppTheme.Colors.textTertiary)
-            Text(grouped(value))
+            Text(value.map(grouped) ?? "明细不可用")
                 .font(AppTheme.Typography.supporting.weight(.semibold))
                 .monospacedDigit()
                 .foregroundColor(AppTheme.Colors.textPrimary)

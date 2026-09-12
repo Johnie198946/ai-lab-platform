@@ -2714,7 +2714,57 @@ def _workflow_order(plan: dict[str, Any]) -> list[str]:
     return ordered
 
 
-def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
+_CUMULATIVE_USAGE_FIELDS = (
+    "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens",
+    "cache_write_tokens", "total_tokens", "estimated_cost_usd",
+)
+
+
+def _agent_usage_baseline(agent: Any) -> dict[str, Any]:
+    """Snapshot this instance, not the last request/session's reported usage.
+
+    Hermes initializes session_* counters on construction and retains them on
+    cached reuse. turn_finalizer returns these counters, except api_calls which
+    is already turn-local. Do not reset Hermes' native accounting to get a delta.
+    """
+    baseline = {}
+    for field in _CUMULATIVE_USAGE_FIELDS:
+        value = getattr(agent, "session_" + field, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            baseline[field] = value
+    return baseline
+
+
+def _usage_delta(
+    usage: dict[str, Any], baseline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    # Accept both Hermes' flat finalizer result and wrapped usage adapters.
+    if isinstance(usage.get("usage"), dict):
+        usage = usage["usage"]
+    evidence = {}
+    if baseline is not None and usage.get("usage_scope") != "turn":
+        cumulative = {field: usage[field] for field in _CUMULATIVE_USAGE_FIELDS if field in usage}
+        usage = dict(usage)
+        reset_fields = []
+        for field, current in cumulative.items():
+            if field not in baseline:
+                continue
+            cast = float if field == "estimated_cost_usd" else int
+            current = cast(current or 0)
+            before = cast(baseline[field] or 0)
+            # A decreased counter signals a new counter epoch. Never emit a
+            # negative debit, nor subtract an earlier instance's usage.
+            if current < before:
+                reset_fields.append(field)
+                usage[field] = max(0, current)
+            else:
+                usage[field] = current - before
+        evidence = {
+            "usage_scope": "turn",
+            "cumulative_usage": cumulative,
+            "usage_baseline": dict(baseline),
+            "usage_counter_resets": reset_fields,
+        }
     integer_fields = (
         "input_tokens",
         "output_tokens",
@@ -2724,18 +2774,15 @@ def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
         "total_tokens",
         "api_calls",
     )
-    result = {field: int(usage.get(field) or 0) for field in integer_fields}
-    result["usage_available"] = any(
+    result: dict[str, Any] = {field: int(usage.get(field) or 0) for field in integer_fields}
+    result["usage_available"] = usage.get("usage_available", any(
         field in usage
         for field in ("input_tokens", "output_tokens", "total_tokens")
-    )
-    # Provider 的 total_tokens 会包含每次调用的输入与缓存读取量；它们必须完整
-    # 展示，但计划/节点的 max_tokens 契约是生成上限。执行预算因此按输出与推理
-    # 计量；输入、缓存和费用仍独立记录，不能伪装成 0。
-    result["budget_tokens"] = sum(
-        result[field]
-        for field in ("output_tokens", "reasoning_tokens")
-    )
+    ))
+    # Hermes usage_pricing.normalize_usage retains provider completion/output
+    # totals; reasoning_tokens is a detail of that output, not extra generation.
+    # Input/cache usage stays visible but does not consume the generation cap.
+    result["budget_tokens"] = result["output_tokens"]
     result.update(
         {
             "estimated_cost_usd": float(usage.get("estimated_cost_usd") or 0),
@@ -2745,6 +2792,14 @@ def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
             "cost_source": str(usage.get("cost_source") or "none"),
         }
     )
+    for field in ("usage_scope", "cumulative_usage", "usage_baseline", "usage_counter_resets"):
+        if field in usage:
+            result[field] = usage[field]
+    result.update(evidence)
+    if any(field != "estimated_cost_usd" for field in result.get("usage_counter_resets", [])):
+        # An in-place token counter reset has no proven per-turn baseline.
+        # Keep the evidence, but require reconciliation rather than auto-charge.
+        result["usage_available"] = False
     return result
 
 
@@ -2924,6 +2979,7 @@ def _run_workflow_node_in_process(
         )
         timeout_timer.daemon = True
         timeout_timer.start()
+        usage_baseline = _agent_usage_baseline(agent)
         result = agent.run_conversation(goal)
         if timeout_fired.is_set():
             raise TimeoutError(
@@ -2931,7 +2987,7 @@ def _run_workflow_node_in_process(
             )
         result = result if isinstance(result, dict) else {}
         reply = str(result.get("final_response") or "").strip()
-        return reply, getattr(agent, "session_id", None) or session_id, result
+        return reply, getattr(agent, "session_id", None) or session_id, _usage_delta(result, usage_baseline)
     finally:
         if timeout_timer is not None:
             timeout_timer.cancel()
@@ -6430,6 +6486,10 @@ def _run_agent_sync(
     session_db: Any = None
     route_context: dict[str, Any] = {}
     cache_keep = False
+    usage_baseline: dict[str, Any] = {}
+    result_usage: dict[str, Any] | None = None
+
+    execution_started = False
     original_goal = goal
     hermes_home_token: Any = None
     try:
@@ -6642,6 +6702,8 @@ def _run_agent_sync(
         route_marker = _triage_route_marker(applied_triage)
         persistent_goal = route_marker + original_goal
         execution_goal = route_marker + goal
+        usage_baseline = _agent_usage_baseline(agent)
+        execution_started = True
         if qws_business_context is not None:
             # Hermes sees current signed QWS facts for this request, while its
             # SessionDB persists only the clean conversational turn. This uses
@@ -6665,6 +6727,12 @@ def _run_agent_sync(
             )
         cache_keep = True
         result_dict = result if isinstance(result, dict) else {}
+        raw_usage = (
+            result_dict.get("usage")
+            if isinstance(result_dict.get("usage"), dict)
+            else result_dict
+        )
+        result_usage = _usage_delta(raw_usage, usage_baseline)
         final = (
             result_dict.get("final_response") or ""
             if result_dict else str(result or "")
@@ -6684,6 +6752,7 @@ def _run_agent_sync(
                 "type": "error",
                 "code": "knowledge_action_missing",
                 "message": "未生成可确认的笔记操作方案，请重试。",
+                "usage": result_usage,
             })
             return
         if (
@@ -6705,23 +6774,29 @@ def _run_agent_sync(
                         "source_message_ids": source_ids,
                     }
                 )
-        raw_usage = (
-            result_dict.get("usage")
-            if isinstance(result_dict.get("usage"), dict)
-            else result_dict
-        )
         _qput(
             stream_q,
             {
                 "type": "done",
                 "session_id": user_id,
                 "answer": final,
-                "usage": _usage_delta(raw_usage),
+                "usage": result_usage,
             },
         )
     except Exception as e:
         print(f"[bridge] ⚠️ 进程内 agent 执行失败: {e}")
-        _qput(stream_q, {"type": "error", "code": "internal", "message": str(e)[:200]})
+        # Completed usage survives post-processing errors. If Hermes raised
+        # during execution, retain only counters it actually confirmed;
+        # absent counters remain missing, never a fabricated zero-cost receipt.
+        if result_usage is None and execution_started and agent is not None:
+            after = _agent_usage_baseline(agent)
+            observed = _usage_delta(after, usage_baseline)
+            if observed.get("usage_available") and observed.get("total_tokens", 0) > 0:
+                result_usage = observed
+        _qput(stream_q, {
+            "type": "error", "code": "internal", "message": str(e)[:200],
+            "usage": result_usage or {},
+        })
     finally:
         _knowledge_tool_context.value = None
         _client_context_tool_context.value = None
@@ -7068,11 +7143,12 @@ def _run_clarification_in_process(prompt: str) -> tuple[str, dict[str, Any]]:
         timeout_timer = threading.Timer(60, _interrupt)
         timeout_timer.daemon = True
         timeout_timer.start()
+        usage_baseline = _agent_usage_baseline(agent)
         result = agent.run_conversation(prompt)
         if timeout_fired.is_set():
             raise TimeoutError("Hermes clarification exceeded 60 seconds")
         result = result if isinstance(result, dict) else {}
-        return str(result.get("final_response") or "").strip(), _usage_delta(result)
+        return str(result.get("final_response") or "").strip(), _usage_delta(result, usage_baseline)
     finally:
         if timeout_timer is not None:
             timeout_timer.cancel()

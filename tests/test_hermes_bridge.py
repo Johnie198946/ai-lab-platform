@@ -736,7 +736,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         )
         self.assertEqual(usage["total_tokens"], 10_185)
         self.assertEqual(usage["cache_read_tokens"], 10_000)
-        self.assertEqual(usage["budget_tokens"], 75)
+        self.assertEqual(usage["budget_tokens"], 50)
 
     def test_node_prompt_includes_only_direct_dependency_summary(self):
         from scripts.hermes_bridge import _workflow_node_prompt

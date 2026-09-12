@@ -47,12 +47,13 @@ from backend.services.knowledge_action_capability import (
     mint_knowledge_action_capability,
 )
 from backend.api.knowledge_actions import persist_knowledge_action_proposal
-from backend.services.llm_usage import record_llm_usage
+from backend.services.llm_usage import combine_provider_usage, record_llm_usage
 from backend.services.inference_policy import (
     InferencePolicyConflict,
     InferenceQuotaExceeded,
     decide_inference,
     release_inference,
+    persist_usage_prefix,
     reserve_inference,
     settle_inference,
 )
@@ -170,19 +171,10 @@ def _bridge_url_for_placement(
 
 
 def _combined_usage(*items: dict[str, Any] | None) -> dict[str, Any] | None:
-    available = [item for item in items if isinstance(item, dict) and item]
-    if not available:
-        return None
-    result: dict[str, Any] = {}
-    for field in ("input_tokens", "output_tokens", "total_tokens", "api_calls"):
-        values = [item.get(field) for item in available if item.get(field) is not None]
-        if values:
-            result[field] = sum(int(value) for value in values)
-    for field in ("provider", "model"):
-        result[field] = next(
-            (str(item[field]) for item in reversed(available) if item.get(field)), ""
-        )
-    return result
+    return combine_provider_usage(*(
+        item if item is None or item.get("usage_scope") == "turn" else {}
+        for item in items
+    ))
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
@@ -526,6 +518,8 @@ async def _call_hermes_recorded(
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, List[ReasoningStep]]:
     started = time.perf_counter()
+    quota_owned = bool((agent_config or {}).get("inference_policy"))
+    _last_hermes_usage.set({})
     try:
         reply, reasoning = await _call_hermes(
             goal,
@@ -537,20 +531,22 @@ async def _call_hermes_recorded(
             agent_config=agent_config,
         )
         success = bool(reply) and not reply.lstrip().startswith("⚠️")
-        await record_llm_usage(
-            auth_payload=auth_payload,
-            usage_payload=_last_hermes_usage.get(),
-            latency_ms=round((time.perf_counter() - started) * 1000),
-            success=success,
-        )
+        if not quota_owned:
+            await record_llm_usage(
+                auth_payload=auth_payload,
+                usage_payload=_last_hermes_usage.get(),
+                latency_ms=round((time.perf_counter() - started) * 1000),
+                success=success,
+            )
         return reply, reasoning
     except Exception:
-        await record_llm_usage(
-            auth_payload=auth_payload,
-            usage_payload=None,
-            latency_ms=round((time.perf_counter() - started) * 1000),
-            success=False,
-        )
+        if not quota_owned:
+            await record_llm_usage(
+                auth_payload=auth_payload,
+                usage_payload=None,
+                latency_ms=round((time.perf_counter() - started) * 1000),
+                success=False,
+            )
         raise
 
 
@@ -1127,6 +1123,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     # 透传 Hermes bridge（附真实思维链）。自然语言委派先运行隔离的专属
     # Agent，再由 Main 在父会话中忠实转交，使父会话保留连续上下文。
     model_attempted = False
+    started = time.perf_counter()
     delegated_usage: dict[str, Any] | None = None
     try:
         if delegated_target is not None:
@@ -1157,6 +1154,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 agent_config=child_config,
             )
             delegated_usage = dict(_last_hermes_usage.get())
+            await persist_usage_prefix(payload, effective_request_id, delegated_usage)
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                 raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
             goal = _delegation_handoff_goal(
@@ -1205,6 +1203,8 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             payload,
             effective_request_id,
             _combined_usage(delegated_usage, _last_hermes_usage.get()),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=bool(answer) and not answer.lstrip().startswith("⚠️"),
         )
         return ChatResponse(
             question=req.question,
@@ -1222,11 +1222,18 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             delegated_by="main_agent" if delegated_target is not None else None,
             feedback_receipt=feedback_payload,
         )
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         if model_attempted:
-            await settle_inference(payload, effective_request_id, None)
+            import anyio
+            with anyio.CancelScope(shield=True):
+                await settle_inference(
+                    payload, effective_request_id, None,
+                    latency_ms=round((time.perf_counter() - started) * 1000),
+                )
         else:
             await release_inference(payload, effective_request_id)
+        if isinstance(e, asyncio.CancelledError):
+            raise
         raise HTTPException(
             status_code=502, detail=f"Hermes 调用失败: {e}"
         ) from e
@@ -1936,6 +1943,7 @@ async def stream_chat(
                         agent_config=child_config,
                     )
                     delegated_usage = dict(_last_hermes_usage.get())
+                    await persist_usage_prefix(payload, effective_request_id, delegated_usage)
                     if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                         raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
                 except Exception as exc:
@@ -2035,21 +2043,13 @@ async def stream_chat(
                                 delegated_usage,
                                 event.get("usage")
                                 if isinstance(event.get("usage"), dict)
-                                else None,
+                                else {},
                             )
-                        ),
-                    )
-                    ledger_terminal = True
-                    await record_llm_usage(
-                        auth_payload=payload,
-                        usage_payload=(
-                            event.get("usage")
-                            if isinstance(event.get("usage"), dict)
-                            else None
                         ),
                         latency_ms=round((time.perf_counter() - started) * 1000),
                         success=event.get("type") == "done",
                     )
+                    ledger_terminal = True
                     if event.get("type") == "done":
                         answer = str(event.get("answer") or "")
                         await _enqueue_chat_message(
@@ -2076,12 +2076,22 @@ async def stream_chat(
                 ensure_ascii=False,
             ) + "\n\n"
         finally:
-            if reservation_active and not ledger_terminal:
-                if model_attempted:
-                    await settle_inference(payload, effective_request_id, None)
-                else:
-                    await release_inference(payload, effective_request_id)
-            _streaming_sessions.discard(isolated_session_id)
+            try:
+                # ASGI disconnect uses level cancellation: shield the transaction,
+                # but do not cancel the durable upstream run or release its quota.
+                import anyio
+                with anyio.CancelScope(shield=True):
+                    if reservation_active and not ledger_terminal:
+                        if model_attempted:
+                            await settle_inference(
+                                payload, effective_request_id, None,
+                                latency_ms=round((time.perf_counter() - started) * 1000),
+                                success=False,
+                            )
+                        else:
+                            await release_inference(payload, effective_request_id)
+            finally:
+                _streaming_sessions.discard(isolated_session_id)
 
     return StreamingResponse(
         _gen(),

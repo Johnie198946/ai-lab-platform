@@ -697,32 +697,59 @@ async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITran
 async def test_stream_records_exact_usage(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     import backend.api.chat as chat_mod
 
-    recorded: list[dict] = []
-
     async def fake_bridge_stream(*args, **kwargs):
         yield (
             'data: {"type":"done","answer":"ok","usage":'
-            '{"input_tokens":12,"output_tokens":3,"total_tokens":15,'
+            '{"usage_scope":"turn","input_tokens":12,"output_tokens":3,"total_tokens":15,'
             '"provider":"dashscope","model":"qwen-plus"}}\n\n'
         )
 
-    async def fake_record(**kwargs):
-        recorded.append(kwargs)
-
     monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
-    monkeypatch.setattr(chat_mod, "record_llm_usage", fake_record)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/chat/stream",
-            json={"question": "统计这次调用"},
+            json={"question": "统计这次调用", "request_id": "synthetic-stream-usage-0001"},
             headers=auth_headers(),
         )
 
     assert response.status_code == 200
-    assert len(recorded) == 1
-    assert recorded[0]["success"] is True
-    assert recorded[0]["usage_payload"]["total_tokens"] == 15
+    from sqlalchemy import select
+    from backend.db import SessionLocal
+    from backend.models.tenant import InferenceReservation, LLMUsageRecord
+    async with SessionLocal() as db:
+        records = (await db.scalars(select(LLMUsageRecord).where(
+            LLMUsageRecord.request_id == "synthetic-stream-usage-0001"))).all()
+        reservation = await db.get(InferenceReservation, {
+            "user_id": "1", "request_id": "synthetic-stream-usage-0001"})
+        assert len(records) == 1 and records[0].success
+        assert reservation.actual_tokens == records[0].total_tokens == 15
+
+
+@pytest.mark.asyncio
+async def test_stream_cancel_keeps_reservation_pending(app, transport, monkeypatch):
+    import backend.api.chat as chat_mod
+    from sqlalchemy import select
+    from backend.db import SessionLocal
+    from backend.models.tenant import InferenceReservation, LLMUsageRecord
+
+    async def cancelled_bridge(*args, **kwargs):
+        yield 'data: {"type":"status","phase":"running"}\n\n'
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", cancelled_bridge)
+    # httpx's in-process transport asserts when ASGI is cancelled without a
+    # final body. The important effect is the shielded accounting transaction.
+    with pytest.raises((AssertionError, asyncio.CancelledError)):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/chat/stream", headers=auth_headers(), json={
+                "question": "synthetic cancellation", "request_id": "synthetic-cancel-0001"})
+    async with SessionLocal() as db:
+        row = await db.get(InferenceReservation, {"user_id": "1", "request_id": "synthetic-cancel-0001"})
+        records = (await db.scalars(select(LLMUsageRecord).where(
+            LLMUsageRecord.request_id == "synthetic-cancel-0001"))).all()
+        assert row.state == "pending_reconcile" and row.actual_tokens is None
+        assert len(records) == 1 and records[0].total_tokens is None
 
 
 @pytest.mark.asyncio

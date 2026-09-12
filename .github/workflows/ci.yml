@@ -51,5 +51,7 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
       - run: python -m pip install -r requirements.txt
+      # Native deferred-tool validation fixture uses this pinned Hermes dependency.
+      - run: python -m pip install snowballstemmer==3.1.1
       - run: PYTHONPATH=. python -m pytest -q
       - run: PYTHONPATH=. python -c "import backend; print('import ok')"

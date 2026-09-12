@@ -139,6 +139,101 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
+    func testUsageSummaryDecodesCacheBreakdownWithoutInference() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"days":30,"total_calls":2,"success_calls":2,"failed_calls":0,"input_tokens":90,"output_tokens":10,"cache_read_tokens":0,"cache_write_tokens":7,"total_tokens":123,"missing_usage_calls":0,"token_total_basis":"verified_requests_only","legacy_unverified_total_tokens":45,"legacy_unverified_calls":1,"unverified_calls":1,"reconciliation_required":true,"usage_state":"partial","daily":[{"date":"2026-09-12","calls":2,"input_tokens":90,"output_tokens":10,"cache_read_tokens":4,"cache_write_tokens":null,"total_tokens":123}],"models":[{"provider":"fixture","model":"fixture-model","calls":2,"input_tokens":90,"output_tokens":10,"cache_read_tokens":null,"cache_write_tokens":7,"total_tokens":123,"missing_usage_calls":0}],"quota":null}"#.utf8)
+
+        let summary = try decoder.decode(UsageSummaryDTO.self, from: payload)
+
+        XCTAssertEqual(summary.totalTokens, 123)
+        XCTAssertEqual(summary.cacheReadTokens, 0)
+        XCTAssertEqual(summary.cacheWriteTokens, 7)
+        XCTAssertEqual(summary.daily.first?.cacheReadTokens, 4)
+        XCTAssertNil(summary.daily.first?.cacheWriteTokens)
+        XCTAssertNil(summary.models.first?.cacheReadTokens)
+        XCTAssertEqual(summary.models.first?.cacheWriteTokens, 7)
+        XCTAssertEqual(summary.tokenTotalBasis, "verified_requests_only")
+        XCTAssertEqual(summary.legacyUnverifiedTotalTokens, 45)
+        XCTAssertEqual(summary.legacyUnverifiedCalls, 1)
+        XCTAssertEqual(summary.unverifiedCalls, 1)
+        XCTAssertEqual(summary.reconciliationRequired, true)
+        XCTAssertEqual(summary.usageState, "partial")
+        XCTAssertEqual(summary.usageTitle, "已核验用量")
+        XCTAssertEqual(summary.usagePeriodCaption, "近 30 天已核验用量")
+        XCTAssertTrue(summary.coverageNotices.contains("1 次历史记录待核验、不计入该数值"))
+        XCTAssertTrue(summary.coverageNotices.contains("当前范围仅部分调用已核验；1 次未核验调用不计入该数值"))
+    }
+
+    func testUsageSummaryKeepsMissingCacheBreakdownUnavailable() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"days":7,"total_calls":1,"success_calls":1,"failed_calls":0,"input_tokens":80,"output_tokens":20,"total_tokens":150,"missing_usage_calls":0,"daily":[{"date":"2026-09-11","calls":1,"input_tokens":80,"output_tokens":20,"total_tokens":150}],"models":[{"provider":"legacy","model":"legacy-model","calls":1,"input_tokens":80,"output_tokens":20,"total_tokens":150,"missing_usage_calls":0}],"quota":null}"#.utf8)
+
+        let summary = try decoder.decode(UsageSummaryDTO.self, from: payload)
+
+        XCTAssertEqual(summary.totalTokens, 150)
+        XCTAssertNil(summary.cacheReadTokens)
+        XCTAssertNil(summary.cacheWriteTokens)
+        XCTAssertNil(summary.daily.first?.cacheReadTokens)
+        XCTAssertNil(summary.daily.first?.cacheWriteTokens)
+        XCTAssertNil(summary.models.first?.cacheReadTokens)
+        XCTAssertNil(summary.models.first?.cacheWriteTokens)
+        XCTAssertNil(summary.tokenTotalBasis)
+        XCTAssertNil(summary.usageState)
+        XCTAssertEqual(summary.usageTitle, "服务端用量账本")
+        XCTAssertEqual(summary.usagePeriodCaption, "近 7 天账本记录")
+        XCTAssertEqual(summary.coverageNotices, ["当前服务未标注核验口径；该数值仅为服务端用量账本"])
+    }
+
+    func testUsageSummaryDoesNotPresentUnverifiedZeroAsOverallZero() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"days":30,"total_calls":3,"success_calls":3,"failed_calls":0,"input_tokens":0,"output_tokens":0,"total_tokens":0,"missing_usage_calls":3,"token_total_basis":"verified_requests_only","legacy_unverified_total_tokens":900,"legacy_unverified_calls":3,"unverified_calls":3,"reconciliation_required":true,"usage_state":"partial","daily":[],"models":[],"quota":null}"#.utf8)
+
+        let summary = try decoder.decode(UsageSummaryDTO.self, from: payload)
+
+        XCTAssertEqual(summary.usageTitle, "已核验用量")
+        XCTAssertTrue(summary.coverageNotices.contains("3 次历史记录待核验、不计入该数值"))
+        XCTAssertTrue(summary.coverageNotices.contains("3 次调用缺少 Token usage，未计入该数值"))
+        XCTAssertTrue(summary.coverageNotices.contains("当前范围没有已核验覆盖；0 仅表示已核验子集，不代表整体用量为 0"))
+    }
+
+    @MainActor
+    func testTokenSummaryCacheBreakdownScreenshotFixtures() throws {
+        #if canImport(UIKit)
+        let summary = UsageSummaryDTO(
+            days: 30, totalCalls: 2, successCalls: 2, failedCalls: 0,
+            inputTokens: 90, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 7,
+            totalTokens: 123, missingUsageCalls: 0,
+            tokenTotalBasis: "verified_requests_only", legacyUnverifiedTotalTokens: 0,
+            legacyUnverifiedCalls: 0, unverifiedCalls: 0,
+            reconciliationRequired: false, usageState: "complete",
+            daily: [], models: [], quota: nil
+        )
+        attachScreenshot(
+            TokenSummaryCard(summary: summary).preferredColorScheme(.light).padding(),
+            name: "token-summary-cache-breakdown-light-fixture",
+            height: 760
+        )
+        attachScreenshot(
+            TokenSummaryCard(summary: UsageSummaryDTO(
+                days: 30, totalCalls: 2, successCalls: 2, failedCalls: 0,
+                inputTokens: 90, outputTokens: 10, cacheReadTokens: nil, cacheWriteTokens: nil,
+                totalTokens: 123, missingUsageCalls: 0,
+                tokenTotalBasis: nil, legacyUnverifiedTotalTokens: nil,
+                legacyUnverifiedCalls: nil, unverifiedCalls: nil,
+                reconciliationRequired: nil, usageState: nil,
+                daily: [], models: [], quota: nil
+            )).preferredColorScheme(.light).padding(),
+            name: "token-summary-cache-breakdown-unavailable-light-fixture",
+            height: 760
+        )
+        #else
+        throw XCTSkip("UIKit screenshot attachments require the iOS test host")
+        #endif
+    }
+
     func testHermesMemoryCenterDecodesNativeProfileContract() throws {
         let payload = Data(#"{"items":[{"id":"mem_abc","target":"user","content":"偏好结论先行"}],"limits":{"user":1375,"memory":2200},"usage":{"user":6,"memory":0},"review_interval_turns":10}"#.utf8)
         let decoder = JSONDecoder()

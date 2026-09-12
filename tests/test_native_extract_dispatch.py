@@ -64,7 +64,12 @@ with patch.object(plugins, 'get_plugin_manager', return_value=manager):
                 args = {'urls': [base + path for path in paths]}
                 name = 'web_extract'
                 if wrapped:
-                    name, args = 'tool_call', {'name': name, 'arguments': args}
+                    # Hermes resolves the inline tool_call wrapper in its agent
+                    # executor, before model_tools registry dispatch.
+                    from tools.tool_search import resolve_underlying_call
+                    name, args, error = resolve_underlying_call({'name': name, 'arguments': args})
+                    if error:
+                        return {'error': error}
                 raw = model_tools.handle_function_call(name, args, enabled_toolsets=['web'], **scope)
                 return json.loads(raw)
             first = call(['/start', '/fail'])
