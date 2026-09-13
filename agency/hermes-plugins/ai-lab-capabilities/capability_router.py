@@ -1750,13 +1750,13 @@ def _finalize_vault_gate(response_text: str, state: dict[str, Any]) -> str:
             markers.update({relative, relative.removesuffix(".md")})
         for marker in markers:
             marker_paths.setdefault(marker, []).append(path)
-    linked = re.findall(r"\[\[([^\]]+)\]\]", response_text)
+    linked = list(dict.fromkeys(re.findall(r"\[\[([^\]]+)\]\]", response_text)))
+    ambiguous = any(len(marker_paths.get(marker, [])) > 1 for marker in linked)
     cited = list(dict.fromkeys(
         marker_paths[marker][0]
         for marker in linked
         if len(marker_paths.get(marker, [])) == 1
     ))
-    cited.extend(path for path in reads if path in response_text and path not in cited)
     outside = any(
         (marker.startswith("wiki/") or marker.endswith(".md"))
         and marker not in marker_paths
@@ -1776,13 +1776,21 @@ def _finalize_vault_gate(response_text: str, state: dict[str, Any]) -> str:
         return "知识证据门禁未通过：必需的 Vault 检索 Skill 未成功加载。（VAULT_SKILL_REQUIRED）"
     if changed:
         return "知识证据门禁未通过：已读取的 Vault 文档在发送前发生变化。（VAULT_HASH_CHANGED）"
-    if outside or len(cited) > 3:
+    if outside or ambiguous or len(cited) > 3:
         return "知识证据门禁未通过：引用超出本回合实际读取的最多三篇文档。（VAULT_CITATION_DENIED）"
     if not reads and not (state.get("vault_no_match") and web_ok):
         return "知识证据门禁未通过：没有实际读取 Vault 正文，且无获准的公开补证。（VAULT_READ_REQUIRED）"
     if reads and not cited:
         return "知识证据门禁未通过：答案未引用本回合实际读取的 Vault 文档。（VAULT_CITATION_REQUIRED）"
-    receipt_sources = cited if cited else sorted(answer_urls & set(state.get("web_urls") or set()))[:3]
+    receipt_sources = []
+    for path in cited:
+        exact_markers = [marker for marker in linked if marker_paths.get(marker) == [path]]
+        receipt_sources.append(min(
+            exact_markers,
+            key=lambda marker: (not marker.startswith("wiki/"), not marker.endswith(".md"), marker),
+        ))
+    if not cited:
+        receipt_sources = sorted(answer_urls & set(state.get("web_urls") or set()))[:3]
     return (
         response_text.rstrip()
         + "\n\n知识回执：retrieved_and_cited；来源="
@@ -2037,7 +2045,13 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
             _ordinary_knowledge_context(_routing_query(user_message))
             if route_class == "GENERAL_QA" else ""
         )
-        gated_vault = bool(principal == "vault_owner" and knowledge_context)
+        gated_vault = bool(
+            knowledge_context
+            and (
+                principal == "vault_owner"
+                or (_LOCAL_ENABLED and principal == "local_owner" and bool(state["sender_id"]))
+            )
+        )
         if gated_vault:
             state.update({
                 "knowledge_gate": True,

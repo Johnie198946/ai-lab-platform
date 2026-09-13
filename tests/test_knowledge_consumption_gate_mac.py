@@ -18,25 +18,25 @@ def router(monkeypatch, tmp_path):
     spec.loader.exec_module(module)
     monkeypatch.setenv("AI_LAB_AGENT_OS_MODE", "local_single_tenant")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path))
-    monkeypatch.setattr(module, "_resolve_principal", lambda *a: "vault_owner")
     monkeypatch.setattr(module, "_skill_capabilities", lambda: [{
         "name": "vault-knowledge-retrieval", "kind": "skill", "negative_phrases": [],
     }])
     return module, tmp_path
 
 
-def test_ordinary_vault_owner_requires_skill_and_defers_stream(router):
+def test_real_local_owner_requires_skill_and_defers_stream(router):
     module, _ = router
     ctx = Mock()
     ctx.dispatch_tool.return_value = json.dumps({
         "success": True, "name": "vault-knowledge-retrieval", "content": "read vault first",
     })
     result = module._pre_llm_with_runtime_skill(
-        ctx, "内部政策是什么？", session_id="mac-gate", platform="feishu", sender_id="owner",
+        ctx, "内部政策是什么？", session_id="mac-gate", platform="cli", sender_id="owner",
     )
     assert result["defer_streaming"] is True
     ctx.dispatch_tool.assert_called_once()
     state = module._LOCAL_TURN_STATES["mac-gate"]
+    assert state["principal"] == "local_owner"
     assert state["loaded_skill"] == "vault-knowledge-retrieval"
     blocked = module._pre_tool_call("web_search", {"query": "policy"}, session_id="mac-gate")
     assert blocked and "VAULT_LOOKUP_REQUIRED" in blocked["message"]
@@ -58,7 +58,8 @@ def test_vault_read_hash_citation_receipt_and_change_failure(router):
     )
     answer = module._transform_llm_output("按政策执行 [[wiki/竞品/微软.md]]", session_id="read")
     assert "retrieved_and_cited" in answer
-    assert str(note) in answer
+    assert "来源=wiki/竞品/微软.md" in answer
+    assert str(note) not in answer
     assert "不证明结论被证据语义蕴含" in answer
     note.write_text("changed policy", encoding="utf-8")
     answer = module._transform_llm_output("按政策执行 [[wiki/竞品/微软.md]]", session_id="read")

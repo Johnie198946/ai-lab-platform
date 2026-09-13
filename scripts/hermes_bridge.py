@@ -1684,6 +1684,15 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     gateway_status = docs.get("retrieval_status") if isinstance(docs, dict) else None
     if isinstance(docs, dict):
         docs = docs.get("docs", [])
+    if gateway_status in {"denied", "error"}:
+        return json.dumps({
+            "success": False,
+            "error": f"knowledge_gateway_{gateway_status}",
+            "retrieval_status": gateway_status,
+            "query": query,
+            "fallback_recommended": False,
+            "docs": [],
+        }, ensure_ascii=False)
     # An exact acronym absent from every result is a deterministic coverage gap,
     # not semantic proof that an entity-only hit answers the question.
     required_acronyms = re.findall(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9-]{1,23}(?![A-Za-z0-9])", query)

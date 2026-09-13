@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import queue
 
+import pytest
+
 from scripts import hermes_bridge as bridge
 
 
@@ -56,6 +58,26 @@ def test_preread_top3_budget_and_delta_barrier(monkeypatch):
     assert barrier.accept({"type": "status", "phase": "reasoning"})
     assert target.get_nowait()["type"] == "status"
     assert target.empty()
+
+
+@pytest.mark.parametrize("gateway_status", ["denied", "error"])
+def test_gateway_denied_and_error_remain_failures(monkeypatch, gateway_status):
+    bridge._knowledge_tool_context.value = {
+        "capability": "signed-capability-token",
+        "scopes": ["knowledge/general/public"],
+        "sources": ["tenant_knowledge"],
+    }
+    monkeypatch.setattr(bridge, "_knowledge_gateway_search", lambda *a, **k: {
+        "retrieval_status": gateway_status, "docs": [],
+    })
+    try:
+        payload = json.loads(bridge._knowledge_search_tool({"query": "internal policy"}))
+        _, state = bridge._perform_knowledge_preread("internal policy")
+    finally:
+        bridge._knowledge_tool_context.value = None
+    assert payload["success"] is False
+    assert payload["error"] == f"knowledge_gateway_{gateway_status}"
+    assert state["status"] == gateway_status
 
 
 def test_live_barrier_receipt_and_fail_closed(monkeypatch):
