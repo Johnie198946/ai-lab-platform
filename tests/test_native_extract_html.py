@@ -75,3 +75,19 @@ def test_missing_or_failed_cleaner_falls_back(provider, monkeypatch):
     assert title == "Fallback"
     assert "Navigation kept by fallback" in content
     assert "Readable evidence" in content
+
+
+def test_role_main_is_treated_as_an_article_candidate(provider):
+    html = (
+        "<html><head><title>Documentation</title></head><body>"
+        "<nav>Docs navigation pricing login</nav>"
+        '<div role="main"><h1>Documentation</h1>'
+        + "<p>Body paragraph explains the documented behavior. </p>" * 20
+        + "</div><footer>Legal cookie settings</footer></body></html>"
+    ).encode()
+
+    _, content = provider._decode_response(response(), html, url="https://example.com/docs")
+
+    assert "Body paragraph explains" in content
+    assert "Docs navigation pricing login" not in content
+    assert "Legal cookie settings" not in content

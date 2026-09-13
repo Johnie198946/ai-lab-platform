@@ -139,9 +139,9 @@ def _load_trafilatura():
 
 def _article_candidate(html: str) -> bool:
     return bool(
-        re.search(r"<(?:article|main)\b", html, re.IGNORECASE)
+        re.search(r"<(?:article|main)\b|role\s*=\s*[\"']main[\"']", html, re.IGNORECASE)
         or re.search(
-            r'["\']@type["\']\s*:\s*["\'](?:NewsArticle|Article|BlogPosting)["\']',
+            r'["\']@type["\']\s*:\s*["\'](?:Article|NewsArticle|BlogPosting|TechArticle)["\']',
             html,
             re.IGNORECASE,
         )
