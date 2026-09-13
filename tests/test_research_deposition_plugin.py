@@ -499,7 +499,10 @@ class ResearchDepositionTests(unittest.TestCase):
                      turn_id="cron-turn",
                      task_id="cron:f5b369363d63:4dbdfed1067b43d58d03d2a53eadf439",
                      platform="cron")
-        self.begin("执行产业雷达深度研究并自动沉淀", scope)
+        loaded_skill_wrapper = "Skill policy examples: 只看看 / 不保存 / no_save；Wiki Writer 编译研究素材"
+        with patch("cron.jobs.get_job", return_value={"prompt": "执行产业雷达深度研究并自动沉淀"}):
+            result = self.begin(loaded_skill_wrapper, scope)
+        self.assertIn("[Local research contract]", result["context"])
         record = self.ctx.state.get(self.deposit.key(self.deposit.scope(scope)))
         association = record["consent_association"]
         self.assertEqual(record["save_policy"], "governed_auto")
@@ -513,8 +516,10 @@ class ResearchDepositionTests(unittest.TestCase):
             for scope in scopes:
                 self.begin(scope=scope)
                 self.assertFalse(self.execute(scope=scope)["success"])
-        writer_scope = dict(self.scope, task_id="writer", turn_id="writer-turn", platform="cron")
-        self.begin("Wiki Writer 编译研究素材，只消费 manifest", writer_scope)
+        writer_scope = dict(self.scope, session_id="cron_c067f0237f86_20260913_120000",
+                            task_id="writer", turn_id="writer-turn", platform="cron")
+        with patch("cron.jobs.get_job", return_value={"prompt": "Wiki Writer 编译研究素材，只消费 manifest"}):
+            self.begin("loaded Skill examples: 只看看 / no_save", writer_scope)
         writer_record = self.ctx.state.get(self.deposit.key(self.deposit.scope(writer_scope)))
         self.assertNotIn("obligation", writer_record)
         # Native tool callback lacks platform; authenticated pre projection binds it.
