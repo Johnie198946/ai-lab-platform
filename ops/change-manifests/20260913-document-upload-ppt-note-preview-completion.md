@@ -43,21 +43,27 @@
 - 真机复查: iPhone“囧尼部落”（CoreDevice `CFE79F35-1270-527D-8BD7-9AB60449B6DF` / Xcode `00008150-000C50980244401C`）已连接。Debug 真机构建退出码 0。首次安装误选旧 DerivedData，手机回读为 `1.0.3 (20)`；经用户指出后定位正确产物 `AIPlatformApp-fdywafccmdyztcgguzlhahizprfd`，构建时间 `2026-09-13 01:51:40`，覆盖安装后真机回读为 `1.0.3 (35)`，并成功启动。旧包安装不计验收证据。
 - 真机联网验收: 当前 Debug 包固定连接 `https://120.24.248.58`；新后端已部署，但尚未完成修复后卡片视觉回读、知识编译、PPT 下载和系统转发闭环，不得标记为 VERIFIED。
 - TestFlight Build 36: 以 `9f15880100828b71ab1de8a9901bd6449c38cb66` 归档，祖先包含文档卡片修复 `37838f87c0f4f6ded3502248595db35c60828318`、Token 卡片简化 `f29583f` 与用量修复 `6d4e5ba`。8 个文档/Token 定向 iOS 测试通过；Release archive 为 `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-13/Quantumn-1.0.3-36.xcarchive`，包内版本 `1.0.3 (36)`，Team `AALA948YY5`，arm64，二进制 SHA-256 `638f59147ed5691c9c8ed5f72de25ae1af7177fa3568eca26c1d3a94fd85105f`。App Store Connect 返回 `Uploaded package is processing`、`Upload succeeded` 与 `EXPORT SUCCEEDED`。
+- 五项缺陷修订回归：`python3 -m pytest tests/test_document_presentation.py -q` 为 `25 passed, 1 skipped`；`WorkflowLifecycleDTOTests` 全套 `138 passed`；CAS 编码定向测试及审批门无损编码定向测试各 `1 passed`。
+- 修订真机构建：基于 `f8d31ebbff3eb530fb0d86089e6bc139d3de3d75` 的 Debug Build 36 使用 iPhone 目标构建成功，并通过 Xcode Devices 覆盖安装到“囧尼部落”。
+- 真机文件链路：上传 `收入证明.pdf` 成功；新卡片显示真实 PDF 封面、`701 KB`、原件预览与提取文本入口；Chat 同步显示 `收入证明.pdf 演示文稿` 工作流入口。
+- 真机需求链路：首项澄清明确显示“已读取源文档”，内容线索来自实际文件；用途、页数、视觉方向均可逐项确认；方案页未展示执行边界、知识范围编辑器、总 Token 步进器或节点预算。
+- 真机 422 回归：工作流 `wf_d33f03f5f05146f3a40b90d006eb8a28` 的 `PATCH /plan` 返回 `200 OK`，`POST /approve-plan` 返回 `201 Created`，随后进入 `agent_ready` 并实际执行。
+- 首轮执行暴露并定位审批门丢失：iOS 保存方案时丢弃 `scenario_id`、`scenario_version`、`approval_gate`，导致大纲/版式不暂停且最终以 `approved presentation design is missing, stale, or tampered` 失败。提交 `425ee8c` 让 DTO 解码/编码无损保留这些服务端字段；对应测试通过。
 
 ## 交付状态
 
-- status: `DEPLOYED`
-- commit SHA: 后端/工作流实现 `49444561a5f9d24c75877ece62d9b6bca901401f`；文档卡片渲染修复 `37838f87c0f4f6ded3502248595db35c60828318`；Build 36 归档提交 `9f15880100828b71ab1de8a9901bd6449c38cb66`。
-- GitHub remote/ref/SHA: Build 36 归档提交已推送至 `Johnie198946/ai-lab-platform/main` 并经 `git ls-remote` 核验；生产部署源 `Johnie198946/Quantum` 包含等价文档卡片修复提交 `f19d877dce95d1c22a358a1c40d38b7791a66476`。
-- server_before: `.deployed-sha=97d3990385cb74886785ec37d4cb30f951c0f555`；release `/opt/releases/ai-lab-platform-97d3990385cb.A30r2r`；API 与主要 Compose 服务 healthy。
-- server_after: `.deployed-sha=49444561a5f9d24c75877ece62d9b6bca901401f`；release `/opt/releases/ai-lab-platform-49444561a5f9.SAz0Ib`；API 与 workflow worker 镜像 revision 均为目标 SHA。
-- health_check: exact-SHA 部署完成 6/6；API `/ready` 返回 `{"status":"ready","version":"0.8.0"}`，公网 HTTPS `/health` 返回 HTTP 200，Hermes Bridge v6 经容器实际路径返回 healthy，API 和两个 Hermes systemd 单元 active。
-- functional_check: 后端回归、iOS 单测、附件卡片与 Token 卡片定向回归、模拟器编译、正确 Build 35 真机构建/安装/启动、Build 36 Release archive 与 TestFlight 上传通过；生产运行契约审计通过。真机卡片视觉回读及后续联网端到端仍待完成。
-- rollback_point: `/opt/releases/ai-lab-platform-97d3990385cb.A30r2r`；附加 root-only 镜像/证明检查点 `/opt/ai-lab-shared/deployment-checkpoints/20260913-document-ppt-49444561`。
+- status: `PUSHED`
+- commit SHA: 五项缺陷实现与部署基线 `479b7ab7468f7d222b057dddd82791fa0ddda51e`；审批门 DTO 修复 `425ee8c`；当前合并提交 `f8d31ebbff3eb530fb0d86089e6bc139d3de3d75`。
+- GitHub remote/ref/SHA: `Johnie198946/ai-lab-platform` 的 `codex/build36-device-acceptance-fixes` 已由 `git ls-remote` 核验为 `f8d31ebbff3eb530fb0d86089e6bc139d3de3d75`；`main` 仍为 `1922d1318b7f5a53a3edb30dbdb08ca815a7c2a7`，未绕过保护直接推送。
+- server_before: `.deployed-sha=49444561a5f9d24c75877ece62d9b6bca901401f`；release `/opt/releases/ai-lab-platform-49444561a5f9.SAz0Ib`；API ready。
+- server_after: `.deployed-sha=479b7ab7468f7d222b057dddd82791fa0ddda51e`；release `/opt/releases/ai-lab-platform-479b7ab7468f.4kqg68`；统一 API/workflow/planning/evaluation 运行镜像 revision 为该 SHA。
+- health_check: 部署流程 `6/6`；API `/ready` 通过；运行契约审计通过；Hermes Bridge v6 healthy。
+- functional_check: 新文档卡片、701 KB 大小、预览/提取文本、Chat 工作流同步、真实文档驱动澄清、精简方案页与 422 修复均已在物理 iPhone 验证。首轮 PPT 执行验证出审批门 DTO 根因；修复包已重新构建并安装，但 Mac 锁屏阻断了第二轮完整审批、PPTX 下载和系统分享页复测，因此不标记 `VERIFIED`。
+- rollback_point: `/opt/releases/ai-lab-platform-49444561a5f9.SAz0Ib`；root-only 检查点 `/opt/ai-lab-shared/deployment-checkpoints/20260913-device-acceptance-479b7ab`；旧镜像标签 `rollback-49444561-before-479b7ab` 已保留。
 
 ## 风险与未完成项
 
-- 真机已回读确认安装并启动正确 Build 35；尚缺新版本后端上的真实 iPhone 端到端操作证据。
-- 生产已部署新后端；必须在解锁真机上完成真实文件上传、笔记出现、多轮大纲/版式确认、PPT 下载和系统分享，才可升级为 `VERIFIED`。
-- Apple 已接收 Build 36，但仍在处理；TestFlight 测试组可见性尚未独立回读，不把“上传成功”扩大表述为“测试员已可安装”。
+- Mac 当前锁屏，Computer Use 无法继续；需解锁后在已重装的修复包上新建一次工作流，验证大纲审批、版式审批、最终 PPTX、下载以及仅打开不实际外传的 iOS 分享页。
+- App Store Connect 已接收的公开 TestFlight Build 36 来自 `9f158801...`，不含后补的五项缺陷与审批门 DTO 修复。Apple 不允许重复上传相同 build number；公开测试需要另发 Build 37。
+- 任务分支已推送，`main` 未包含 `f8d31eb`；在没有更明确的 main 目标授权/保护分支流程前不声称已合入主线。
 - 扫描版 PDF OCR 仍不在本任务范围，继续返回“无可提取文本”的明确错误。
