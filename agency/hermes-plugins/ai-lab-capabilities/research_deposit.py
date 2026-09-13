@@ -23,7 +23,14 @@ from urllib.parse import urlsplit, parse_qsl, unquote
 POLICY_VERSION = "local-research-v1"
 STORAGE_SCOPE = "user_vault_existing_sync"
 _IMPORT_LOCK = threading.Lock()
-NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)|no[ _-]save|view\s+only", re.I)
+NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)", re.I)
+NO_SAVE_COMMAND = re.compile(r"^\s*(?:please\s+)?(?:no[ _-]save|view\s+only)\s*[.!。！]?\s*$", re.I)
+NO_SAVE_TOKEN = re.compile(r"\bno[ _-]save\b|\bview\s+only\b", re.I)
+NO_SAVE_INJECTED = re.compile(
+    r"No save/no_save remains an absolute veto|"
+    r"\[Research deposit blocked:\s*no_save\]|"
+    r"Same-material consent association unavailable", re.I,
+)
 NO_SAVE_META = re.compile(
     r"(?:为什么|为何|排查|修复|解决|返回|报错|入口).{0,40}no[ _-]save|"
     r"no[ _-]save.{0,40}(?:为什么|为何|排查|修复|解决|返回|报错|入口)", re.I,
@@ -44,6 +51,13 @@ def digest(value):
 
 def is_research(text):
     return bool(RESEARCH.search(text or "")) and not NOT_RESEARCH.search(text or "")
+
+
+def explicit_no_save(text):
+    """Match owner opt-out language, never an injected policy/status mention."""
+    text = text or ""
+    return bool(NO_SAVE.search(text) or NO_SAVE_COMMAND.fullmatch(text)
+                or (NO_SAVE_TOKEN.search(text) and not NO_SAVE_INJECTED.search(text)))
 
 
 class ResearchDeposit:
@@ -144,6 +158,14 @@ class ResearchDeposit:
         # Native host lock, separate from state.json's atomic read/write lock.
         return _locked_plugin_state(self.ctx.state.data_dir / (key.replace(":", "-") + ".transaction"))
 
+    def consent_association(self, scope, platform):
+        """Persist the exact host authority used for later cron recovery."""
+        kind = "cron_job_configuration" if platform == "cron" else "host_turn_research_intent"
+        snapshot = {"kind": kind, "host_task_id": scope["task_id"],
+                    "owner": "local_owner", "policy_version": POLICY_VERSION,
+                    "research_intent": True, "explicit_no_save": False}
+        return dict(snapshot, snapshot_sha256=digest(snapshot))
+
     def pre(self, user_message="", **kw):
         scope = self.scope(kw)
         if not all(scope.values()):
@@ -152,7 +174,7 @@ class ResearchDeposit:
         with self.lock(key):
             old = self.ctx.state.get(key, {})
             # Opt-out BEFORE copying any title, URL, body or message digest.
-            if NO_SAVE.search(user_message or "") and not NO_SAVE_META.search(user_message or ""):
+            if explicit_no_save(user_message) and not NO_SAVE_META.search(user_message or ""):
                 old.update(veto=True, stage="blocked", reason="no_save")
                 self.ctx.state.set(key, old)
                 return {"context": "[Research deposit blocked: no_save] No save permitted. Lifting requires verified same-material host consent; this host has no supported consent association."}
@@ -214,9 +236,13 @@ class ResearchDeposit:
                     return None  # Migration/continuation cannot re-recognize an owner.
                 self.migrate(old)
                 old["scope"] = scope  # Items retain the exact original receipt scope.
+                old.setdefault("save_policy", "governed_auto")
+                old.setdefault("consent_association", self.consent_association(scope, platform))
             else:
                 old = {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
-                       "stage": "research", "obligation": True, "schema_version": 2, "items": {}}
+                       "stage": "research", "obligation": True, "schema_version": 2, "items": {},
+                       "save_policy": "governed_auto",
+                       "consent_association": self.consent_association(scope, platform)}
             self.ctx.state.set(key, old)
         stage_prefix = (
             "[Full research sequencing] First emit the source-only quick read as commentary. "
@@ -792,7 +818,7 @@ class ResearchDeposit:
                     "response_text": response_text + "\n\n[研究沉淀 blocked：无法核验保存；未进 Wiki。]"}
 
     def post(self, assistant_response="", **kw):
-        if NO_SAVE.search(kw.get("user_message") or ""):
+        if explicit_no_save(kw.get("user_message") or ""):
             self.pre(**kw)
         return self.verify_completion(assistant_response, **kw)
 
