@@ -4,6 +4,7 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
+from importlib import import_module
 from threading import BoundedSemaphore
 import re
 import io
@@ -47,6 +48,8 @@ MAX_REDIRECTS = 5
 MAX_RESPONSE_BYTES = 2_000_000
 MAX_WECHAT_RESPONSE_BYTES = 5_000_000
 DEFAULT_TIMEOUT_SECONDS = 20.0
+HTML_MIN_CLEAN_CHARS = 200
+HTML_MIN_CLEAN_COVERAGE = 0.15
 ALLOWED_CONTENT_TYPES = (
     "text/",
     "application/json",
@@ -116,6 +119,75 @@ class _ReadableHTML(HTMLParser):
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r" {2,}", " ", text).strip()
         return title, text
+
+
+def _load_trafilatura():
+    """Load the pinned cleaner, including this plugin's isolated dependencies."""
+    try:
+        return import_module("trafilatura")
+    except ImportError:
+        dependencies = Path(__file__).resolve().parent / "_html_dependencies"
+        if dependencies.is_dir() and str(dependencies) not in sys.path:
+            sys.path.insert(0, str(dependencies))
+        try:
+            return import_module("trafilatura")
+        except ImportError:
+            return None
+
+
+def _article_candidate(html: str) -> bool:
+    return bool(
+        re.search(r"<(?:article|main)\b", html, re.IGNORECASE)
+        or re.search(
+            r'["\']@type["\']\s*:\s*["\'](?:NewsArticle|Article|BlogPosting)["\']',
+            html,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _high_recall_page(html: str) -> bool:
+    """Keep the old parser for page shapes where short fields are decisive."""
+    return bool(
+        re.search(r"<table\b", html, re.IGNORECASE)
+        or re.search(
+            r'["\']@type["\']\s*:\s*["\'](?:Product|ItemList|DiscussionForumPosting|QAPage)["\']',
+            html,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r'(?:class|id)\s*=\s*["\'][^"\']*(?:forum|thread|discussion|search-results|results-list|product-grid|listing)[^"\']*["\']',
+            html,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _clean_article_html(html: str, fallback: str, *, url: str | None = None) -> str:
+    """Use balanced main-content extraction only when its result is credible."""
+    if not _article_candidate(html) or _high_recall_page(html):
+        return fallback
+    trafilatura = _load_trafilatura()
+    if trafilatura is None:
+        return fallback
+    try:
+        cleaned = trafilatura.extract(
+            html,
+            url=url,
+            output_format="markdown",
+            include_comments=True,
+            include_tables=True,
+            favor_precision=False,
+            favor_recall=False,
+        )
+    except Exception:  # A cleaner failure must not turn a readable page into an error.
+        return fallback
+    cleaned = (cleaned or "").strip()
+    if len(cleaned) < HTML_MIN_CLEAN_CHARS:
+        return fallback
+    if len(cleaned) / max(1, len(fallback)) < HTML_MIN_CLEAN_COVERAGE:
+        return fallback
+    return cleaned
 
 
 def _validate_url(url: str) -> None:
@@ -248,7 +320,7 @@ def _parse_pdf(body: bytes) -> dict[str, Any]:
     return result
 
 
-def _decode_response(response: Any, body: bytes) -> tuple[str, str]:
+def _decode_response(response: Any, body: bytes, *, url: str | None = None) -> tuple[str, str]:
     if _is_pdf(response, body[:5]):
         result = _parse_pdf(body)
         return result["title"], result["content"]
@@ -262,7 +334,8 @@ def _decode_response(response: Any, body: bytes) -> tuple[str, str]:
     if "html" in content_type or "<html" in text[:1000].casefold():
         parser = _ReadableHTML()
         parser.feed(text)
-        return parser.result()
+        title, fallback = parser.result()
+        return title, _clean_article_html(text, fallback, url=url)
     return "", re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -312,7 +385,7 @@ def extract_one(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[s
                     content = f"Source: {current}\n\n" + document["content"]
                     pdf_metadata = document["pdf"]
                 else:
-                    title, content = _decode_response(response, body)
+                    title, content = _decode_response(response, body, url=current)
                 if not content:
                     raise ValueError("No readable content found")
                 return {

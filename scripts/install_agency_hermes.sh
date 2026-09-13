@@ -103,3 +103,6 @@ echo "==> Configure safe AI Lab web extraction"
   --hermes-home "$HERMES_HOME" \
   --plugin-source agency/hermes-plugins/ai-lab-capabilities \
   --backup-root "$HERMES_HOME/backups"
+"$HERMES_PYTHON" -m pip install --disable-pip-version-check --no-input \
+  --target "$plugin_dest/_html_dependencies" \
+  -r "$plugin_dest/requirements-html.txt"

@@ -42,7 +42,7 @@ def _atomic_yaml(path: Path, document: dict) -> None:
 def configure(hermes_home: Path, plugin_source: Path, backup_root: Path) -> dict[str, str]:
     required = {
         "plugin.yaml", "__init__.py", "capability_router.py",
-        "native_extract_provider.py", "skill-routing-overrides.yaml",
+        "native_extract_provider.py", "requirements-html.txt", "skill-routing-overrides.yaml",
     }
     missing = sorted(name for name in required if not (plugin_source / name).is_file())
     if missing:
