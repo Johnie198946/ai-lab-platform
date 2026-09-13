@@ -1641,6 +1641,9 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
              if book_request else _knowledge_fallback_payload("knowledge_scope_denied", query=query)),
             ensure_ascii=False,
         )
+    gateway_options: dict[str, Any] = {}
+    if "gateway_timeout" in _kwargs:
+        gateway_options["timeout_seconds"] = float(_kwargs["gateway_timeout"])
     try:
         docs = _knowledge_gateway_search(
             str(context["capability"]),
@@ -1656,7 +1659,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             **({"book_request": book_request} if book_request else {}),
             **({"wiki_request": wiki_request} if wiki_request else {}),
             with_status=True,
-            timeout_seconds=float(_kwargs.get("gateway_timeout") or 20.0),
+            **gateway_options,
         )
     except PermissionError:
         if book_request:
