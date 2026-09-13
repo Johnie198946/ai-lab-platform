@@ -1881,6 +1881,14 @@ def _successful_web_result_urls(tool_name: str, result: Any) -> set[str]:
         payload = json.loads(result) if isinstance(result, str) else result
     except (TypeError, ValueError):
         return set()
+    if isinstance(payload, dict) and "result" in payload and not any(
+        key in payload for key in ("data", "results", "url", "page_url", "current_url")
+    ):
+        nested = payload.get("result")
+        try:
+            payload = json.loads(nested) if isinstance(nested, str) else nested
+        except (TypeError, ValueError):
+            return set()
     if not isinstance(payload, dict) or payload.get("success", True) is False or payload.get("error"):
         return set()
     if tool_name == "web_search":
@@ -1908,15 +1916,26 @@ def _successful_web_result_urls(tool_name: str, result: Any) -> set[str]:
     return set()
 
 
-def _record_knowledge_gate_tool_result(tool_name: str, result: Any) -> None:
+def _record_knowledge_gate_tool_result(
+    tool_name: str, result: Any, function_args: Any = None
+) -> None:
     state = getattr(_knowledge_gate_context, "value", None)
     if not isinstance(state, dict):
         return
+    effective_tool = tool_name
+    if tool_name == "tool_call":
+        args = function_args
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (TypeError, ValueError):
+                args = {}
+        effective_tool = str((args or {}).get("name") or "") if isinstance(args, dict) else ""
     succeeded = _knowledge_result_succeeded(result)
-    state["tool_results"].append(f"{tool_name}:{'success' if succeeded else 'error'}")
-    if tool_name not in {"web_search", "web_extract", "browser_exec"} or not succeeded:
+    state["tool_results"].append(f"{effective_tool or tool_name}:{'success' if succeeded else 'error'}")
+    if effective_tool not in {"web_search", "web_extract", "browser_exec"} or not succeeded:
         return
-    urls = _successful_web_result_urls(tool_name, result)
+    urls = _successful_web_result_urls(effective_tool, result)
     if urls:
         state["web_succeeded"] = True
         state["web_urls"].update(urls)
@@ -5990,7 +6009,7 @@ def _tenantize_created_skill(
 
 def _emit_tool_complete(stream_q: queue.Queue, tool_call_id, function_name, function_args=None, result=None) -> None:
     """工具完成事件（模块级可测）：不发 raw result（对齐 api_server 契约·防内部信息泄露）。"""
-    _record_knowledge_gate_tool_result(str(function_name or ""), result)
+    _record_knowledge_gate_tool_result(str(function_name or ""), result, function_args)
     if not tool_call_id or (function_name or "").startswith("_"):
         return
     _qput(stream_q, {

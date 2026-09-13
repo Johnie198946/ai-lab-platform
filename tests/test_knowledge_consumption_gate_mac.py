@@ -121,3 +121,12 @@ def test_failed_web_payload_cannot_satisfy_mac_gate(router, tool_name, payload):
     module._record_vault_gate_result(state, tool_name, {}, json.dumps(payload))
     assert state["web_succeeded"] is False
     assert state["web_urls"] == set()
+
+
+def test_wrapped_web_result_is_unwrapped_for_gate(router):
+    module, _ = router
+    urls = module._successful_web_result_urls(
+        "web_search",
+        {"result": {"data": {"web": [{"url": "https://example.com/source"}]}}},
+    )
+    assert urls == {"https://example.com/source"}

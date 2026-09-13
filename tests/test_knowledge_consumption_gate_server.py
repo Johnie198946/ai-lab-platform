@@ -140,3 +140,42 @@ def test_no_match_requires_successful_authorized_web_url():
     state.update(web_succeeded=True, web_urls={"https://example.com/source"})
     answer, receipt = bridge._finalize_knowledge_gate("公开资料 https://example.com/source", "cap", state)
     assert receipt["semantic"] == "retrieved_and_cited" and receipt["web_fallback"] is True
+
+
+def test_deferred_web_tool_result_satisfies_gate():
+    state = {"status": "no_match", "docs": [], "web_succeeded": False,
+             "web_urls": set(), "tool_results": []}
+    bridge._knowledge_gate_context.value = state
+    try:
+        bridge._record_knowledge_gate_tool_result(
+            "tool_call",
+            {"result": {"data": {"web": [{"url": "https://example.com/evidence"}]}}},
+            {"name": "web_search", "arguments": {"query": "q"}},
+        )
+    finally:
+        bridge._knowledge_gate_context.value = None
+    answer, receipt = bridge._finalize_knowledge_gate(
+        "外部补证见 https://example.com/evidence", "cap", state
+    )
+    assert receipt["semantic"] == "retrieved_and_cited"
+    assert receipt["web_fallback"] is True
+    assert "知识回执：" in answer
+
+
+def test_deferred_failed_web_tool_result_does_not_satisfy_gate():
+    state = {"status": "no_match", "docs": [], "web_succeeded": False,
+             "web_urls": set(), "tool_results": []}
+    bridge._knowledge_gate_context.value = state
+    try:
+        bridge._record_knowledge_gate_tool_result(
+            "tool_call",
+            {"result": {"results": [{"url": "https://example.com/fail", "error": "timeout"}]}},
+            {"name": "web_extract", "arguments": {"urls": ["https://example.com/fail"]}},
+        )
+    finally:
+        bridge._knowledge_gate_context.value = None
+    answer, receipt = bridge._finalize_knowledge_gate(
+        "外部补证见 https://example.com/fail", "cap", state
+    )
+    assert receipt["status"] == "no_match"
+    assert "未命中" in answer
