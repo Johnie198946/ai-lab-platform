@@ -1,7 +1,7 @@
 # Completion Manifest
 
 - `task_id`: `knowledge-consumption-hard-gate-20260913`
-- `status`: `AUDIT_APPROVED_READY_FOR_DEPLOY`
+- `status`: `FINAL_AUDIT_APPROVED_READY_FOR_REDEPLOY`
 - `branch`: `main`
 - `worktree`: `/Users/dengzhaoyu/Projects/ai-lab-platform-web-cleaning-baseline-20260913`
 - `base_sha`: `bc791e55c543473f139bc2778744c144bf5347bf`
@@ -25,6 +25,7 @@
   - 仅 `no_match`/`insufficient` 且已授权 Web 工具真实成功、最终答案保留该 URL 时允许公开补证。
   - `done` 同次写入结构化 `knowledge_receipt`，成功答案追加路径安全的可见回执；非流式 `/v1/chat` 同时保留该结构化字段。成功语义固定为 `retrieved_and_cited`，不声明自然语言结论已被证据蕴含。
   - 保留纯 supplied translation、URL-only（现有证据仅 `web_extract`）、only-my-notes、闲聊/空输入/直接回复兼容路径；混合“翻译并结合内部政策判断”仍进入门禁。
+  - 兼容 Hermes 延迟工具包装：`tool_call(name=web_search|web_extract)` 的结构化成功结果可计入回执；外层失败、内层失败、无正文提取均不得通过门禁。
 - `agency/hermes-plugins/ai-lab-capabilities/capability_router.py`
   - 仅 Mac `vault_owner` 或带 sender identity 的单用户 `local_owner` 普通知识回合自动加载既有 `vault-knowledge-retrieval` Skill，并设置 `defer_streaming`；cloud multi-tenant 不继承该权限。
   - Vault 定位/读取前阻止 Web；跟踪 `search_files`、`read_file` 和 Web 结果。
@@ -36,8 +37,9 @@
 
 ## 测试与校验
 
-- 受影响主链与兼容套件：`233 passed, 8 warnings in 4.92s`。
-- 独立 Auditor 定向套件：`67 passed`，并完成 live status、失败 Web、混合翻译、local owner、路径安全及非流式回执直接探针；结论 `APPROVE`，审核 HEAD `21346023ffffe589eb76a58ead93344104f34e45`。
+- 受影响主链与兼容套件：原主链 `233 passed`；延迟 Web wrapper 修复后 focused 套件 `71 passed, 6 warnings`。
+- 第一轮独立 Auditor：`67 passed`，审核 HEAD `21346023ffffe589eb76a58ead93344104f34e45`，结论 `APPROVE`。
+- 生产真实验收发现 `web_search` 可经延迟 `tool_call` 执行；修复后第二轮独立 Auditor 审核 HEAD `83f9d300e5a4293143edbe930af548c9dc9544cb`，`71 passed`，结论 `APPROVE — 0 blocking findings`。
 - 全仓基线探测：`2318 passed, 30 skipped, 38 failed, 99 errors in 128.90s`。失败集中在未变更的 Gateway 主题匹配、research-deposition、HTML 清洗及 API/TestClient 环境（Starlette/httpx）等套件；本变更涉及的 233 项均通过，未将全仓基线误报为绿色。
 - warnings：仅既有 FastAPI `on_event` 与 Pydantic class config deprecation。
 - `python3 -m py_compile scripts/hermes_bridge.py agency/hermes-plugins/ai-lab-capabilities/capability_router.py`: 通过。
@@ -46,13 +48,14 @@
 
 ## 交付状态
 
-- `audited_code_sha`: `21346023ffffe589eb76a58ead93344104f34e45`。
+- `audited_code_sha`: `83f9d300e5a4293143edbe930af548c9dc9544cb`。
 - `remote_before`: `bc791e55c543473f139bc2778744c144bf5347bf`；最终远端 SHA 在发布后 Vault 回执记录。
 - `server_before`: `479b7ab7468f7d222b057dddd82791fa0ddda51e`，release `/opt/releases/ai-lab-platform-479b7ab7468f.4kqg68`。
-- `server_after`: 发布后回读并写入 Vault 完成回执。
-- `health_check`: 发布前 `/ready`、Bridge `/health` 和公网 `/api/health/ready` 均通过；发布后重新验收。
-- `functional_check`: 本地/服务器真实回执验收在发布阶段执行。
-- `rollback_point`: Git `bc791e55c543473f139bc2778744c144bf5347bf`；Mac 插件备份 `/Users/dengzhaoyu/.hermes/backups/knowledge-consumption-hard-gate-20260913-183425`；服务器保留既有 release 并由 exact-SHA 发布脚本生成回滚点。
+- `server_intermediate`: `a406e00ec4399c1dd12f0978e77d3ba51cb8509b` 已部署到 `/opt/releases/ai-lab-platform-a406e00ec439.a97V7c`，8/8 容器健康；真实 Bridge 试验验证授权拒绝与库内零命中均 fail-closed，并暴露延迟 Web wrapper 回执缺口。
+- `server_after`: wrapper 修复所在最终提交发布后回读并写入 Vault 完成回执。
+- `health_check`: 中间发布后 API `/ready`、Bridge `/health`、8/8 容器和公网根路径 HTTPS 200 均通过；最终发布后重新验收。
+- `functional_check`: 本地已对真实 Vault 条目 `wiki/竞品/微软.md` 完成 Skill 加载、正文读取、路径安全引用与 `retrieved_and_cited` 回执验收；服务器最终真实回执在发布阶段执行。
+- `rollback_point`: Git `bc791e55c543473f139bc2778744c144bf5347bf`；Mac 插件备份 `/Users/dengzhaoyu/.hermes/backups/knowledge-consumption-hard-gate-20260913-183425`；服务器 release `/opt/releases/ai-lab-platform-479b7ab7468f.4kqg68`，镜像/attestation 备份 `/opt/ai-lab-shared/rollback/knowledge-consumption-hard-gate-a406e00ec4399c1dd12f0978e77d3ba51cb8509b`。
 
 ## 已接受风险与剩余项
 
