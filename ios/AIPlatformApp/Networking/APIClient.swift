@@ -1483,6 +1483,9 @@ public struct WorkflowPlanNodeDTO: Codable, Identifiable, Hashable {
 
 public struct WorkflowNodeParametersDTO: Codable, Hashable {
     public var agentId: String?
+    public var scenarioId: String?
+    public var scenarioVersion: String?
+    public var approvalGate: String?
     public var query: String?
     public var instruction: String?
     public var outputFormat: String?
@@ -1494,6 +1497,9 @@ public struct WorkflowNodeParametersDTO: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case agentId = "agent_id"
+        case scenarioId = "scenario_id"
+        case scenarioVersion = "scenario_version"
+        case approvalGate = "approval_gate"
         case query, instruction
         case outputFormat = "output_format"
         case knowledgeScope = "knowledge_scope"
@@ -1504,12 +1510,16 @@ public struct WorkflowNodeParametersDTO: Codable, Hashable {
     }
 
     private enum DecodingKeys: String, CodingKey {
-        case agentId, query, instruction, outputFormat, knowledgeScope
+        case agentId, scenarioId, scenarioVersion, approvalGate
+        case query, instruction, outputFormat, knowledgeScope
         case allowNetwork, requiresReview, maxTokens, revisionNote
     }
 
     public init(
         agentId: String? = nil,
+        scenarioId: String? = nil,
+        scenarioVersion: String? = nil,
+        approvalGate: String? = nil,
         query: String? = nil,
         instruction: String? = nil,
         outputFormat: String? = nil,
@@ -1520,6 +1530,9 @@ public struct WorkflowNodeParametersDTO: Codable, Hashable {
         revisionNote: String? = nil
     ) {
         self.agentId = agentId
+        self.scenarioId = scenarioId
+        self.scenarioVersion = scenarioVersion
+        self.approvalGate = approvalGate
         self.query = query
         self.instruction = instruction
         self.outputFormat = outputFormat
@@ -1533,6 +1546,9 @@ public struct WorkflowNodeParametersDTO: Codable, Hashable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DecodingKeys.self)
         agentId = try container.decodeIfPresent(String.self, forKey: .agentId)
+        scenarioId = try container.decodeIfPresent(String.self, forKey: .scenarioId)
+        scenarioVersion = try container.decodeIfPresent(String.self, forKey: .scenarioVersion)
+        approvalGate = try container.decodeIfPresent(String.self, forKey: .approvalGate)
         query = try container.decodeIfPresent(String.self, forKey: .query)
         instruction = try container.decodeIfPresent(String.self, forKey: .instruction)
         outputFormat = try container.decodeIfPresent(String.self, forKey: .outputFormat)
