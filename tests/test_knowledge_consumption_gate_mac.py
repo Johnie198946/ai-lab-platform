@@ -46,6 +46,8 @@ def test_mixed_translation_requires_gate_but_supplied_translation_does_not(route
     module, _ = router
     assert module._ordinary_knowledge_context("翻译：hello") == ""
     assert module._ordinary_knowledge_context("翻译并结合内部政策判断是否合规")
+    assert module._ordinary_knowledge_context("翻译以下内容，结合内部政策判断是否合规")
+    assert module._ordinary_knowledge_context("Translate this, assess compliance with internal policy")
 
 
 def test_vault_read_hash_citation_receipt_and_change_failure(router):
