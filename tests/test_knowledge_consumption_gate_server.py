@@ -89,6 +89,8 @@ def test_live_barrier_receipt_and_fail_closed(monkeypatch):
     })
     answer, receipt = bridge._finalize_knowledge_gate("结论 [[wiki/a.md]]", "cap", state)
     assert answer.startswith("结论")
+    assert "知识回执：retrieved_and_cited" in answer
+    assert "wiki/a.md@v7" in answer
     assert receipt == {
         "status": "matched", "cited_paths": ["wiki/a.md"], "web_fallback": False,
         "tool_results": [], "web_urls": [],
@@ -99,6 +101,36 @@ def test_live_barrier_receipt_and_fail_closed(monkeypatch):
     })
     answer, receipt = bridge._finalize_knowledge_gate("结论 [[wiki/a.md]]", "cap", state)
     assert "门禁未通过" in answer and receipt["status"] == "denied"
+
+
+@pytest.mark.parametrize("live_status", ["denied", "error", "insufficient"])
+def test_live_barrier_requires_matched_status(monkeypatch, live_status):
+    state = {"status": "matched", "docs": [{
+        "path": "wiki/a.md", "version": "v7", "citation": "knowledge:wiki/a.md", "markdown": "body",
+    }], "web_succeeded": False, "web_urls": set()}
+    monkeypatch.setattr(bridge, "_knowledge_gateway_search", lambda *a, **k: {
+        "retrieval_status": live_status, "docs": [{"path": "wiki/a.md", "version": "v7"}],
+    })
+    answer, receipt = bridge._finalize_knowledge_gate("结论 [[wiki/a.md]]", "cap", state)
+    assert "门禁未通过" in answer
+    assert receipt["status"] == live_status
+    assert "semantic" not in receipt
+
+
+@pytest.mark.parametrize("tool_name,payload", [
+    ("web_extract", {"results": [{"url": "https://example.com/fail", "error": "blocked"}]}),
+    ("web_search", {"data": {"web": []}, "message": "failed https://example.com/fail"}),
+])
+def test_failed_web_payload_cannot_satisfy_server_gate(tool_name, payload):
+    state = {"status": "no_match", "docs": [], "web_succeeded": False,
+             "web_urls": set(), "tool_results": []}
+    bridge._knowledge_gate_context.value = state
+    try:
+        bridge._record_knowledge_gate_tool_result(tool_name, json.dumps(payload))
+    finally:
+        bridge._knowledge_gate_context.value = None
+    assert state["web_succeeded"] is False
+    assert state["web_urls"] == set()
 
 
 def test_no_match_requires_successful_authorized_web_url():

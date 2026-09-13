@@ -1875,6 +1875,39 @@ def _knowledge_result_succeeded(result: Any) -> bool:
     )
 
 
+def _successful_web_result_urls(tool_name: str, result: Any) -> set[str]:
+    """Return only URLs backed by a successful structured web result."""
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(payload, dict) or payload.get("success", True) is False or payload.get("error"):
+        return set()
+    if tool_name == "web_search":
+        raw_data = payload.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        rows = data.get("web") or payload.get("web") or payload.get("results") or []
+        return {
+            str(row.get("url") or "").strip()
+            for row in rows
+            if isinstance(row, dict) and str(row.get("url") or "").strip() and not row.get("error")
+        }
+    if tool_name == "web_extract":
+        rows = payload.get("results") or []
+        return {
+            str(row.get("url") or "").strip()
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("url") or "").strip()
+            and not row.get("error")
+            and bool(row.get("content") or row.get("raw_content"))
+        }
+    if tool_name == "browser_exec":
+        url = str(payload.get("url") or payload.get("page_url") or payload.get("current_url") or "").strip()
+        return {url} if url and bool(payload.get("title") or payload.get("content") or payload.get("output")) else set()
+    return set()
+
+
 def _record_knowledge_gate_tool_result(tool_name: str, result: Any) -> None:
     state = getattr(_knowledge_gate_context, "value", None)
     if not isinstance(state, dict):
@@ -1883,7 +1916,7 @@ def _record_knowledge_gate_tool_result(tool_name: str, result: Any) -> None:
     state["tool_results"].append(f"{tool_name}:{'success' if succeeded else 'error'}")
     if tool_name not in {"web_search", "web_extract", "browser_exec"} or not succeeded:
         return
-    urls = set(re.findall(r"https?://[^\s<>\]\)\"']+", str(result or ""), re.I))
+    urls = _successful_web_result_urls(tool_name, result)
     if urls:
         state["web_succeeded"] = True
         state["web_urls"].update(urls)
@@ -1914,11 +1947,16 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
                 include_content=True, wiki_request={"paths": cited}, with_status=True,
                 timeout_seconds=_KNOWLEDGE_GATE_TIMEOUT,
             )
-            live_docs = live.get("docs") or [] if isinstance(live, dict) else []
-            actual = {str(doc.get("path") or ""): str(doc.get("version") or "")
-                      for doc in live_docs}
-            if actual != expected:
-                status = "denied"
+            if not isinstance(live, dict):
+                status = "error"
+            elif (live_status := str(live.get("retrieval_status") or "error")) != "matched":
+                status = live_status if live_status in {"denied", "error", "insufficient", "no_match"} else "error"
+            else:
+                live_docs = live.get("docs") or []
+                actual = {str(doc.get("path") or ""): str(doc.get("version") or "")
+                          for doc in live_docs}
+                if actual != expected:
+                    status = "denied"
         except PermissionError:
             status = "denied"
         except Exception:
@@ -1938,7 +1976,18 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
         return _knowledge_gap_answer(status), receipt
     receipt["semantic"] = "retrieved_and_cited"
     receipt["versions"] = {path: str(known[path].get("version") or "") for path in cited}
-    return answer, receipt
+    visible_sources = [
+        f"{path}@{receipt['versions'][path]}" if receipt["versions"][path] else path
+        for path in cited
+    ] or receipt["web_urls"]
+    visible_receipt = (
+        "知识回执：retrieved_and_cited；来源="
+        + ", ".join(visible_sources)
+        + "；外网补证="
+        + ("是" if web_ok else "否")
+        + "。此回执仅证明读取并引用，不证明结论被证据语义蕴含。"
+    )
+    return answer.rstrip() + "\n\n" + visible_receipt, receipt
 
 
 def _inline_user_note_matches(query: str, notes: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -7663,6 +7712,7 @@ async def chat(
                     "hermes_session_id": _user_session_map.get(user_id),
                     "reasoning": [],
                     "usage": done.get("usage") or {},
+                    "knowledge_receipt": done.get("knowledge_receipt"),
                     "events": [
                         item for item in events
                         if item.get("type") in {

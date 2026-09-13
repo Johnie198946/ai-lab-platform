@@ -242,6 +242,19 @@ _PURE_TRANSLATION_RE = re.compile(
     r"^(?:(?:请|帮我|麻烦)(?:你)?\s*|(?:please|can you|could you)\s+)?"
     r"(?:翻译|译成|把.{0,80}翻译|translate\b|translation\b)", re.I,
 )
+
+
+def _is_pure_supplied_translation(text: str) -> bool:
+    """Keep translation-only turns out of the gate, not mixed judgments."""
+    if not _PURE_TRANSLATION_RE.match(text or ""):
+        return False
+    return not re.search(
+        r"(?:并|同时|然后|再).{0,40}(?:结合|判断|分析|核验|评估|合规|政策)|"
+        r"\b(?:and|then)\b.{0,80}\b(?:assess|evaluate|policy|compliance|analy[sz]e)\b",
+        text or "", re.I,
+    )
+
+
 _SIMPLE_EXPLANATION_RE = re.compile(
     r"^(?:请)?(?:快速|简单|简要|一句话).{0,8}(?:解释|介绍|说明|告诉我)",
     re.I,
@@ -1905,7 +1918,7 @@ def _ordinary_knowledge_context(query: str) -> str:
         or _CASUAL_RE.fullmatch(text)
         or _DIRECT_RESPONSE_RE.fullmatch(text)
         or re.fullmatch(r"(?:hi|hello|hey|你好|您好|在吗|谢谢|多谢|好的|收到|晚安|早安)[！!。,.，?？\s]*", text, re.I)
-        or _PURE_TRANSLATION_RE.match(text)
+        or _is_pure_supplied_translation(text)
         or research_routing_excluded(text)
     ):
         return ""
@@ -2410,6 +2423,39 @@ def _result_succeeded(result: str) -> bool:
     return not bool(parsed.get("error")) and parsed.get("success", True) is not False
 
 
+def _successful_web_result_urls(tool_name: str, result: Any) -> set[str]:
+    """Return only URLs backed by a successful structured web result."""
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(payload, dict) or payload.get("success", True) is False or payload.get("error"):
+        return set()
+    if tool_name == "web_search":
+        raw_data = payload.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        rows = data.get("web") or payload.get("web") or payload.get("results") or []
+        return {
+            str(row.get("url") or "").strip()
+            for row in rows
+            if isinstance(row, dict) and str(row.get("url") or "").strip() and not row.get("error")
+        }
+    if tool_name == "web_extract":
+        rows = payload.get("results") or []
+        return {
+            str(row.get("url") or "").strip()
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("url") or "").strip()
+            and not row.get("error")
+            and bool(row.get("content") or row.get("raw_content"))
+        }
+    if tool_name == "browser_exec":
+        url = str(payload.get("url") or payload.get("page_url") or payload.get("current_url") or "").strip()
+        return {url} if url and bool(payload.get("title") or payload.get("content") or payload.get("output")) else set()
+    return set()
+
+
 def _record_deployment_result(
     tool_name: str,
     args: dict[str, Any],
@@ -2488,7 +2534,7 @@ def _record_vault_gate_result(
         state["vault_no_match"] = False
         state.setdefault("vault_reads", {})[str(path)] = digest
     elif tool_name in {"web_search", "web_extract", "browser_exec"}:
-        urls = set(re.findall(r"https?://[^\s<>\]\)\"']+", str(result or ""), re.I))
+        urls = _successful_web_result_urls(tool_name, result)
         if urls:
             state["web_succeeded"] = True
             state.setdefault("web_urls", set()).update(urls)

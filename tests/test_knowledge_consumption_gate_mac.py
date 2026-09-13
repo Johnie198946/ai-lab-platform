@@ -42,6 +42,12 @@ def test_real_local_owner_requires_skill_and_defers_stream(router):
     assert blocked and "VAULT_LOOKUP_REQUIRED" in blocked["message"]
 
 
+def test_mixed_translation_requires_gate_but_supplied_translation_does_not(router):
+    module, _ = router
+    assert module._ordinary_knowledge_context("翻译：hello") == ""
+    assert module._ordinary_knowledge_context("翻译并结合内部政策判断是否合规")
+
+
 def test_vault_read_hash_citation_receipt_and_change_failure(router):
     module, vault = router
     note = vault / "wiki" / "竞品" / "微软.md"
@@ -96,3 +102,19 @@ def test_vault_no_match_web_fallback_requires_success_and_url(router):
         "公开补证 https://example.com/evidence", session_id="fallback"
     )
     assert "retrieved_and_cited" in passed
+
+
+@pytest.mark.parametrize("tool_name,payload", [
+    ("web_extract", {"results": [{"url": "https://example.com/fail", "error": "blocked"}]}),
+    ("web_search", {"data": {"web": []}, "message": "failed https://example.com/fail"}),
+])
+def test_failed_web_payload_cannot_satisfy_mac_gate(router, tool_name, payload):
+    module, _ = router
+    state = {
+        "knowledge_gate": True, "principal": "local_owner", "vault_reads": {},
+        "vault_lookup_complete": True, "vault_no_match": True,
+        "web_succeeded": False, "web_urls": set(),
+    }
+    module._record_vault_gate_result(state, tool_name, {}, json.dumps(payload))
+    assert state["web_succeeded"] is False
+    assert state["web_urls"] == set()
