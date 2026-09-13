@@ -23,7 +23,14 @@ from urllib.parse import urlsplit, parse_qsl, unquote
 POLICY_VERSION = "local-research-v1"
 STORAGE_SCOPE = "user_vault_existing_sync"
 _IMPORT_LOCK = threading.Lock()
-NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)|no[ _-]save|view\s+only", re.I)
+NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)", re.I)
+NO_SAVE_COMMAND = re.compile(r"^\s*(?:please\s+)?(?:no[ _-]save|view\s+only)\s*[.!。！]?\s*$", re.I)
+NO_SAVE_TOKEN = re.compile(r"\bno[ _-]save\b|\bview\s+only\b", re.I)
+NO_SAVE_INJECTED = re.compile(
+    r"No save/no_save remains an absolute veto|"
+    r"\[Research deposit blocked:\s*no_save\]|"
+    r"Same-material consent association unavailable", re.I,
+)
 NO_SAVE_META = re.compile(
     r"(?:为什么|为何|排查|修复|解决|返回|报错|入口).{0,40}no[ _-]save|"
     r"no[ _-]save.{0,40}(?:为什么|为何|排查|修复|解决|返回|报错|入口)", re.I,
@@ -44,6 +51,13 @@ def digest(value):
 
 def is_research(text):
     return bool(RESEARCH.search(text or "")) and not NOT_RESEARCH.search(text or "")
+
+
+def explicit_no_save(text):
+    """Match owner opt-out language, never an injected policy/status mention."""
+    text = text or ""
+    return bool(NO_SAVE.search(text) or NO_SAVE_COMMAND.fullmatch(text)
+                or (NO_SAVE_TOKEN.search(text) and not NO_SAVE_INJECTED.search(text)))
 
 
 class ResearchDeposit:
@@ -144,35 +158,50 @@ class ResearchDeposit:
         # Native host lock, separate from state.json's atomic read/write lock.
         return _locked_plugin_state(self.ctx.state.data_dir / (key.replace(":", "-") + ".transaction"))
 
+    def consent_association(self, scope, platform):
+        """Persist the exact host authority used for later cron recovery."""
+        kind = "cron_job_configuration" if platform == "cron" else "host_turn_research_intent"
+        snapshot = {"kind": kind, "host_task_id": scope["task_id"],
+                    "owner": "local_owner", "policy_version": POLICY_VERSION,
+                    "research_intent": True, "explicit_no_save": False}
+        return dict(snapshot, snapshot_sha256=digest(snapshot))
+
     def pre(self, user_message="", **kw):
         scope = self.scope(kw)
         if not all(scope.values()):
             return None
+        platform = str(getattr(kw.get("platform"), "value", kw.get("platform")) or "").casefold()
+        # Cron may prepend full Skill text containing examples such as
+        # "只看看/no_save". Only the immutable host job prompt can grant or
+        # deny that scheduled task's save policy.
+        cron_writer = False
+        decision_message = user_message
+        cron_match = re.fullmatch(r"cron_([0-9a-f]{12})_[0-9_]+", str(scope.get("session_id") or ""))
+        if cron_match:
+            # Cron workers do not consistently expose agent.platform even
+            # though the native session id is authoritative and immutable.
+            platform = "cron"
+            from cron.jobs import get_job
+            host_job = get_job(cron_match.group(1)) or {}
+            if isinstance(host_job.get("prompt"), str) and host_job["prompt"].strip():
+                decision_message = host_job["prompt"]
+            first_line = re.split(r"[\n。；;，,]", decision_message.strip(), maxsplit=1)[0]
+            cron_writer = bool(WRITER_CONTROL.search(first_line))
         key = self.key(scope)
         with self.lock(key):
             old = self.ctx.state.get(key, {})
             # Opt-out BEFORE copying any title, URL, body or message digest.
-            if NO_SAVE.search(user_message or "") and not NO_SAVE_META.search(user_message or ""):
+            if explicit_no_save(decision_message) and not NO_SAVE_META.search(decision_message or ""):
                 old.update(veto=True, stage="blocked", reason="no_save")
                 self.ctx.state.set(key, old)
                 return {"context": "[Research deposit blocked: no_save] No save permitted. Lifting requires verified same-material host consent; this host has no supported consent association."}
             if old.get("veto"):
                 return {"context": "[Research deposit blocked: no_save] Same-material consent association unavailable; explicit text alone cannot lift this veto."}
-            if not self.allowed(dict(kw, user_message=user_message), read_only=True):
+            if not self.allowed(dict(kw, platform=platform, user_message=user_message), read_only=True):
                 return None  # Policy is an overlay, never replace recovery evidence.
-            platform = str(getattr(kw.get("platform"), "value", kw.get("platform")) or "").casefold()
-            # Cron adds delivery/skill wrappers before the configured prompt.
-            # Resolve only the host's job ID, never IDs supplied in tool inputs.
-            cron_writer = False
-            cron_match = re.fullmatch(r"cron_([0-9a-f]{12})_[0-9_]+", str(scope.get("session_id") or ""))
-            if platform == "cron" and cron_match:
-                from cron.jobs import get_job
-                host_job = get_job(cron_match.group(1)) or {}
-                first_line = re.split(r"[\n。；;，,]", str(host_job.get("prompt") or "").strip(), maxsplit=1)[0]
-                cron_writer = bool(WRITER_CONTROL.search(first_line))
+
             if (cron_writer or old.get("control") or kw.get("task_purpose") in {"wiki_compile", "research_recovery"}
-                    or (platform == "cron" and WRITER_CONTROL.search(re.split(r"[\n。；;，,]", (user_message or "").strip(), maxsplit=1)[0]))
-                    or DEPOSIT_CONTROL.search(user_message or "")):
+                    or DEPOSIT_CONTROL.search(decision_message or "")):
                 if not old.get("obligation"):
                     self.ctx.state.set(key, {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
                                             "control": True, "stage": "not_applicable"})
@@ -180,9 +209,9 @@ class ResearchDeposit:
             if not self.enabled():
                 return None
             from .capability_router import research_stage, research_routing_excluded
-            stage = (research_stage(user_message, conversation_history=kw.get("conversation_history"))
+            stage = (research_stage(decision_message, conversation_history=kw.get("conversation_history"))
                      if platform != "cron" else "")
-            if stage == "quick_read" or (platform != "cron" and research_routing_excluded(user_message)):
+            if stage == "quick_read" or (platform != "cron" and research_routing_excluded(decision_message)):
                 # A preview/meta request creates no write obligation. Never erase
                 # an older obligation or veto; its finalizer remains truthful.
                 return {"context": (
@@ -197,14 +226,14 @@ class ResearchDeposit:
                     "available: do not reuse its receipt, create save authority from history, or "
                     "claim saved. Continue useful research without claiming storage completion."
                 )}
-            if not is_research(user_message) and not old.get("obligation"):
-                if CONTINUATION.search(user_message or ""):
+            if not is_research(decision_message) and not old.get("obligation"):
+                if CONTINUATION.search(decision_message or ""):
                     self.ctx.state.set(key, {"stage": "blocked", "reason": "continuation_scope_required"})
                     return {"context": "[Research deposit blocked] Continuation lacks a canonical task relationship; do not reuse another task's receipt. Continue the useful answer without claiming saved."}
-                if EVIDENCE_REVIEW.search(user_message or "") and not NOT_RESEARCH.search(user_message or ""):
+                if EVIDENCE_REVIEW.search(decision_message or "") and not NOT_RESEARCH.search(decision_message or ""):
                     return {"context": self.evidence_context()}
                 return None
-            if NOT_RESEARCH.search(user_message or ""):
+            if NOT_RESEARCH.search(decision_message or ""):
                 # An unrelated request cannot destroy an existing obligation.
                 if not old.get("obligation"):
                     self.ctx.state.set(key, {"stage": "not_applicable", "reason": "nonresearch_request"})
@@ -214,9 +243,13 @@ class ResearchDeposit:
                     return None  # Migration/continuation cannot re-recognize an owner.
                 self.migrate(old)
                 old["scope"] = scope  # Items retain the exact original receipt scope.
+                old.setdefault("save_policy", "governed_auto")
+                old.setdefault("consent_association", self.consent_association(scope, platform))
             else:
                 old = {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
-                       "stage": "research", "obligation": True, "schema_version": 2, "items": {}}
+                       "stage": "research", "obligation": True, "schema_version": 2, "items": {},
+                       "save_policy": "governed_auto",
+                       "consent_association": self.consent_association(scope, platform)}
             self.ctx.state.set(key, old)
         stage_prefix = (
             "[Full research sequencing] First emit the source-only quick read as commentary. "
@@ -792,7 +825,15 @@ class ResearchDeposit:
                     "response_text": response_text + "\n\n[研究沉淀 blocked：无法核验保存；未进 Wiki。]"}
 
     def post(self, assistant_response="", **kw):
-        if NO_SAVE.search(kw.get("user_message") or ""):
+        user_message = kw.get("user_message") or ""
+        scope = self.scope(kw)
+        cron_match = re.fullmatch(r"cron_([0-9a-f]{12})_[0-9_]+", str(scope.get("session_id") or ""))
+        if cron_match:
+            from cron.jobs import get_job
+            host_job = get_job(cron_match.group(1)) or {}
+            if isinstance(host_job.get("prompt"), str) and host_job["prompt"].strip():
+                user_message = host_job["prompt"]
+        if explicit_no_save(user_message):
             self.pre(**kw)
         return self.verify_completion(assistant_response, **kw)
 
