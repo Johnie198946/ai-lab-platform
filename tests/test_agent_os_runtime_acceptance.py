@@ -173,6 +173,36 @@ def test_native_memory_is_scoped_to_each_user_sandbox(tmp_path: Path) -> None:
     assert emptied["items"] == []
 
 
+def test_explicit_remember_command_writes_once_to_native_user_memory(tmp_path: Path) -> None:
+    from backend.services.tenant_hermes_sandbox import ensure_tenant_sandbox
+    import scripts.hermes_bridge as bridge
+
+    template = tmp_path / "template"
+    template.mkdir()
+    sandbox = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-a", root=tmp_path / "sandboxes",
+        template_root=template,
+    )
+
+    assert bridge._explicit_memory_content("请记住：我偏好结论先行。") == "我偏好结论先行"
+    assert bridge._explicit_memory_content("把刚才内容记下来") is None
+    first_id, first_created = bridge._save_explicit_user_memory(
+        sandbox, "我偏好结论先行"
+    )
+    second_id, second_created = bridge._save_explicit_user_memory(
+        sandbox, "我偏好结论先行"
+    )
+
+    assert first_created is True
+    assert second_created is False
+    assert second_id == first_id
+    assert [item["content"] for item in bridge._sandbox_memory_payload(sandbox)["items"]] == [
+        "我偏好结论先行"
+    ]
+    assert bridge._memory_tool_succeeded('{"success": true}') is True
+    assert bridge._memory_tool_succeeded({"success": False}) is False
+
+
 def test_native_memory_rejects_persistent_prompt_injection(tmp_path: Path) -> None:
     from backend.services.tenant_hermes_sandbox import ensure_tenant_sandbox
     import scripts.hermes_bridge as bridge

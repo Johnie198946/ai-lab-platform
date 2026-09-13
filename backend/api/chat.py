@@ -1522,7 +1522,7 @@ def _is_meaningful_stream_activity(event: dict[str, Any] | None) -> bool:
     if not event:
         return False
     event_type = event.get("type")
-    if event_type in {"tool_start", "tool_complete", "clarify"}:
+    if event_type in {"tool_start", "tool_complete", "clarify", "memory_receipt"}:
         return True
     if event_type == "delta":
         return bool(str(event.get("content") or "").strip())

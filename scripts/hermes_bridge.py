@@ -5924,6 +5924,53 @@ def _routing_user_goal(goal: str) -> str:
     return (goal or "").strip()
 
 
+_EXPLICIT_MEMORY_RE = re.compile(
+    r"^\s*(?:以后\s*)?(?:(?:请你?|麻烦你|帮我|你要)\s*)?"
+    r"(?:记住|remember(?:\s+that)?)\s*[：:,，\s]*(.+?)\s*[。.!！]?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _explicit_memory_content(goal: str) -> str | None:
+    """Return only content behind an explicit remember command."""
+    match = _EXPLICIT_MEMORY_RE.fullmatch(_routing_user_goal(goal))
+    content = match.group(1).strip() if match else ""
+    return content or None
+
+
+def _save_explicit_user_memory(
+    sandbox: TenantHermesSandbox, content: str
+) -> tuple[str, bool]:
+    """Persist one explicit user memory through the native guarded writer."""
+    current = _sandbox_memory_payload(sandbox)
+    existing = next(
+        (
+            item for item in current["items"]
+            if item["target"] == "user" and item["content"] == content
+        ),
+        None,
+    )
+    if existing is not None:
+        return str(existing["id"]), False
+    updated = _mutate_sandbox_memory(
+        sandbox, action="add", target="user", content=content
+    )
+    saved = next(
+        item for item in updated["items"]
+        if item["target"] == "user" and item["content"] == content
+    )
+    return str(saved["id"]), True
+
+
+def _memory_tool_succeeded(result: Any) -> bool:
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            return False
+    return isinstance(result, dict) and result.get("success") is True
+
+
 def _legacy_client_context_enabled(
     client_context_enabled: bool, knowledge_action_enabled: bool
 ) -> bool:
@@ -6263,6 +6310,18 @@ def _build_in_process_agent(
         # 载荷治理：不发 raw result（对齐 api_server 契约·防内部信息泄露）
         _emit_tool_complete(stream_q, tool_call_id, function_name, function_args, result)
         _emit_delegate_receipt(stream_q, function_name, function_args, result)
+        if function_name == "memory" and _memory_tool_succeeded(result):
+            args = function_args if isinstance(function_args, dict) else {}
+            action = str(args.get("action") or "add")
+            _qput(stream_q, {
+                "type": "memory_receipt",
+                "memory_id": str(tool_call_id),
+                "message": {
+                    "add": "Quantum 已写入长期记忆",
+                    "replace": "Quantum 已更新长期记忆",
+                    "remove": "Quantum 已删除长期记忆",
+                }.get(action, "Quantum 已更新长期记忆"),
+            })
         # 技能创建租户化：skill_manage(action=create) 完成后把新技能迁移到 tenants/<tenant>/
         # （租户设置页只显示租户专属技能——用户创建的技能自动归租户，不留在 public）
         if function_name == "skill_manage":
@@ -6523,6 +6582,31 @@ def _run_agent_sync(
 
         hermes_home_token = set_hermes_home_override(_sandbox_hermes_home(sandbox))
         _sandbox_tool_context.value = sandbox
+        explicit_memory = _explicit_memory_content(original_goal)
+        if explicit_memory is not None:
+            try:
+                memory_id, created = _save_explicit_user_memory(
+                    sandbox, explicit_memory
+                )
+            except (KeyError, ValueError) as exc:
+                _qput(stream_q, {
+                    "type": "error",
+                    "code": "memory_write_rejected",
+                    "message": str(exc)[:200],
+                })
+                return
+            _qput(stream_q, {
+                "type": "memory_receipt",
+                "memory_id": memory_id,
+                "message": (
+                    "Quantum 已写入长期记忆"
+                    if created else "这条长期记忆已经存在"
+                ),
+            })
+            goal += (
+                "\n\n【平台记忆回执】该内容已由平台写入当前用户的长期记忆。"
+                "不要再次调用 memory；只需简洁确认。"
+            )
         note_draft_request = not (agent_config or {}).get("knowledge_stage_only") and _is_note_draft_request(goal)
         note_context_claims = client_context_claims or knowledge_claims
         has_client_context = (
@@ -7360,7 +7444,7 @@ async def chat(
                         item for item in events
                         if item.get("type") in {
                             "note_draft", "knowledge_action_draft", "knowledge_navigation",
-                            "tool_start", "tool_complete", "delegate_receipt"
+                            "tool_start", "tool_complete", "delegate_receipt", "memory_receipt"
                         }
                     ],
                 }

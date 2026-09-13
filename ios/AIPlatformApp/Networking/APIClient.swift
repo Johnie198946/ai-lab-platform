@@ -3213,6 +3213,7 @@ public final class APIClient: ObservableObject {
         case clarifyRejected
         case status(phase: String, detail: String)
         case feedbackReceipt(id: String, signalType: String, message: String, revocable: Bool)
+        case memoryReceipt(id: String, message: String)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
         case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String], operation: String?, targetNoteId: String?, targetNoteTitle: String?, targetContentHash: String?)
         case knowledgeActionDraft(KnowledgeActionBlock)
@@ -3269,6 +3270,11 @@ public final class APIClient: ObservableObject {
                     signalType: json["signal_type"] as? String ?? "inferred",
                     message: json["message"] as? String ?? "已作为产品改进反馈记录；输入‘撤销刚才的反馈’可撤销",
                     revocable: json["revocable"] as? Bool ?? false
+                )
+            case "memory_receipt":
+                return .memoryReceipt(
+                    id: json["memory_id"] as? String ?? "",
+                    message: json["message"] as? String ?? "Quantum 已更新长期记忆"
                 )
             case "agent_route":
                 let agent = json["agent"] as? [String: Any] ?? [:]

@@ -100,7 +100,7 @@ public struct MemoryCenterView: View {
                 Text("持续成长，也始终可控")
                     .font(AppTheme.Typography.cardTitle)
                     .foregroundStyle(AppTheme.Colors.textPrimary)
-                Text("Hermes 会在约 \(center?.reviewIntervalTurns ?? 10) 轮对话后复盘一次，并只在你的独立空间内沉淀长期信息。")
+                Text("对 Quantum 说“请记住……”会立即写入；长期对话也会周期性复盘，只保留值得长期使用的信息。")
                     .font(AppTheme.Typography.supporting)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -158,7 +158,7 @@ public struct MemoryCenterView: View {
                 .foregroundStyle(AppTheme.Colors.textTertiary)
 
             if items.isEmpty {
-                Text(errorMessage ?? "尚无内容。你可以主动添加，Hermes 也会在长期协作中逐步沉淀。")
+                Text(errorMessage ?? "尚无内容。你可以主动添加，或在对话中说“请记住……”。")
                     .font(AppTheme.Typography.supporting)
                     .foregroundStyle(errorMessage == nil ? AppTheme.Colors.textSecondary : AppTheme.Colors.statusError)
                     .frame(maxWidth: .infinity, alignment: .leading)

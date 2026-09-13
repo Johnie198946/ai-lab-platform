@@ -308,6 +308,19 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         )
     }
 
+    func testMemoryReceiptEventDecodesForVisibleConfirmation() throws {
+        let event = try XCTUnwrap(APIClient.StreamEvent.parse([
+            "type": "memory_receipt",
+            "memory_id": "mem_abc",
+            "message": "Quantum 已写入长期记忆"
+        ]))
+        guard case let .memoryReceipt(id, message) = event else {
+            return XCTFail("expected memoryReceipt event")
+        }
+        XCTAssertEqual(id, "mem_abc")
+        XCTAssertEqual(message, "Quantum 已写入长期记忆")
+    }
+
     func testNativeChatPresentationUsesTruthfulSingleRunningState() {
         let steps = [
             ReasoningStep(

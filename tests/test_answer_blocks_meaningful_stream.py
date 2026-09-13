@@ -203,7 +203,8 @@ async def test_done_committed_between_event_read_and_snapshot_is_not_lost(run, m
     ({"type": "delta", "content": "正文"}, True),
     ({"type": "answer_page", "blocks": [{"content": " \n"}]}, False),
     ({"type": "answer_page", "blocks": [{"content": "正文"}]}, True),
-    ({"type": "tool_start"}, True), ({"type": "status"}, False),
+    ({"type": "tool_start"}, True), ({"type": "memory_receipt"}, True),
+    ({"type": "status"}, False),
 ])
 def test_backend_activity_uses_meaningful_blocks(event, expected):
     from backend.api.chat import _is_meaningful_stream_activity
