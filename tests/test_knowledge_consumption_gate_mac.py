@@ -130,3 +130,7 @@ def test_wrapped_web_result_is_unwrapped_for_gate(router):
         {"result": {"data": {"web": [{"url": "https://example.com/source"}]}}},
     )
     assert urls == {"https://example.com/source"}
+    assert module._successful_web_result_urls(
+        "web_search",
+        {"success": False, "result": {"data": {"web": [{"url": "https://example.com/source"}]}}},
+    ) == set()

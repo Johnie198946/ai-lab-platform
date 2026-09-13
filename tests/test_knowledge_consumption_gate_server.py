@@ -179,3 +179,10 @@ def test_deferred_failed_web_tool_result_does_not_satisfy_gate():
     )
     assert receipt["status"] == "no_match"
     assert "未命中" in answer
+
+
+def test_failed_outer_wrapper_cannot_smuggle_successful_web_result():
+    assert bridge._successful_web_result_urls(
+        "web_search",
+        {"success": False, "result": {"data": {"web": [{"url": "https://example.com/x"}]}}},
+    ) == set()

@@ -1881,6 +1881,8 @@ def _successful_web_result_urls(tool_name: str, result: Any) -> set[str]:
         payload = json.loads(result) if isinstance(result, str) else result
     except (TypeError, ValueError):
         return set()
+    if not isinstance(payload, dict) or payload.get("success", True) is False or payload.get("error"):
+        return set()
     if isinstance(payload, dict) and "result" in payload and not any(
         key in payload for key in ("data", "results", "url", "page_url", "current_url")
     ):
