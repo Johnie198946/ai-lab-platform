@@ -96,7 +96,8 @@ from backend.services.knowledge_contribution import (
 )
 from backend.services.knowledge_candidate_ingest import enqueue_and_schedule
 from backend.services.document_sources import (
-    DocumentSourceError, MAX_PRESENTATION_SOURCE_CHARACTERS, read_document_receipt,
+    DocumentSourceError, MAX_PRESENTATION_SOURCE_CHARACTERS, document_text,
+    read_document_receipt,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
@@ -527,8 +528,13 @@ def _clarification_steps(workflow: WorkflowDefinition | None) -> tuple[dict[str,
 
 def clarification_payload(index: int, workflow: WorkflowDefinition | None = None) -> dict[str, Any]:
     step = _clarification_steps(workflow)[index]
+    question = step["question"]
+    if index == 0 and workflow:
+        evidence = (workflow.requirements_snapshot or {}).get("source_document_evidence")
+        if evidence:
+            question = f"已读取源文档，识别到这些内容线索：\n{evidence}\n\n{question}"
     return {
-        "question": step["question"],
+        "question": question,
         "choices": step["choices"],
         "multi_select": False,
         "dimension": step["dimension"],
@@ -587,6 +593,9 @@ def requirement_confirmation_payload(
         f"目标：{workflow.description.split('已确认需求：', 1)[0].strip()}",
         f"交付物：{workflow.desired_output}",
     ]
+    evidence = (workflow.requirements_snapshot or {}).get("source_document_evidence")
+    if evidence:
+        details.append(f"文档依据：{evidence}")
     core_answers = answers[:3] if len(answers) >= 3 else []
     for index, step in enumerate(steps):
         answer = core_answers[index] if index < len(core_answers) else "按当前描述与平台默认建议"
@@ -689,9 +698,14 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
                     "code": "presentation_source_too_long",
                     "message": f"源文档提取文本超过 {MAX_PRESENTATION_SOURCE_CHARACTERS} 字符，当前版本不会静默截断，请缩短文档后重试",
                 })
+            text, _ = document_text(tenant(), current_user(payload), body.source_document_id)
+            evidence = "；".join(
+                line.strip() for line in text.splitlines() if line.strip()
+            )[:500]
             requirements_snapshot.update({
                 "scenario_id": "document-to-presentation",
                 "source_document": {key: source[key] for key in ("source_id", "source_revision", "content_hash", "filename", "content_type")},
+                "source_document_evidence": evidence or "文档未包含可展示的非空文本行",
             })
         if body.showroom_session_id and body.customer_demand_id:
             raise HTTPException(status_code=422, detail="只能续接一个客户上下文")
@@ -992,7 +1006,7 @@ async def respond_to_clarification(
                 prior_snapshot = workflow.requirements_snapshot or {}
                 source_context = {
                     key: prior_snapshot[key]
-                    for key in ("showroom_context", "customer_demand", "scenario_id", "source_document")
+                    for key in ("showroom_context", "customer_demand", "scenario_id", "source_document", "source_document_evidence")
                     if prior_snapshot.get(key)
                 }
                 workflow.requirements_snapshot = {**spec, **source_context}

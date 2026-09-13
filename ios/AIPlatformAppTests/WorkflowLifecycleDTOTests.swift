@@ -1506,6 +1506,8 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
               "allow_network": true, "max_tokens": 24000,
               "estimated_tokens": 12000, "knowledge_scope": [],
               "validation_errors": [],
+              "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "activation_revision": 3,
               "dsl": {"name": "英语评估", "nodes": [], "edges": [], "version": "1.0.0"},
               "frozen_at": null, "created_at": null
             }
@@ -1515,6 +1517,18 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         let plan = try decoder().decode(WorkflowPlanDTO.self, from: data)
         XCTAssertEqual(plan.id, "wfp_legacy")
         XCTAssertEqual(plan.dsl.planId, "")
+        XCTAssertEqual(plan.activationRevision, 3)
+
+        let request = WorkflowPlanEditRequestDTO(
+            dsl: plan.dsl, deliverable: plan.deliverable,
+            allowNetwork: plan.allowNetwork, maxTokens: plan.maxTokens,
+            knowledgeScope: plan.knowledgeScope,
+            expectedHash: plan.contentHash,
+            expectedRevision: plan.activationRevision
+        )
+        let encoded = try XCTUnwrap(try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(encoded["expected_hash"] as? String, plan.contentHash)
+        XCTAssertEqual(encoded["expected_revision"] as? Int, 3)
     }
 
     func testNestedPlanIdDecodesWithGlobalSnakeCaseStrategy() throws {

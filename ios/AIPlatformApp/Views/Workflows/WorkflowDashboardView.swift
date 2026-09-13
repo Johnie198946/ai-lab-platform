@@ -584,7 +584,7 @@ public final class WorkflowActivityCoordinator: ObservableObject {
         workflows.values.compactMap { workflow in
             guard !dismissedWorkflowIds.contains(workflow.id),
                   let model = models[workflow.id],
-                  ["planning", "building_agent", "awaiting_approval", "needs_attention"].contains(model.phase)
+                  ["clarifying", "clarifying_pending", "planning", "building_agent", "awaiting_approval", "needs_attention"].contains(model.phase)
             else { return nil }
             return Activity(workflow: workflow, model: model)
         }
@@ -1027,7 +1027,6 @@ private struct WorkflowPlanReviewView: View {
     let onApproved: (WorkflowAgentBuildResponseDTO) -> Void
     @State private var plan: WorkflowPlanDTO?
     @State private var tenantAgents: [TenantAgentDTO] = []
-    @State private var availableKnowledgeScopes: [String] = []
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var replanErrorMessage: String?
@@ -1045,7 +1044,6 @@ private struct WorkflowPlanReviewView: View {
                         if !draft.validationErrors.isEmpty {
                             WorkflowErrorBanner(message: draft.validationErrors.joined(separator: "\n"))
                         }
-                        configuration(plan: planBinding)
                         nodeTimeline(plan: planBinding)
                         if !replanReasoningSteps.isEmpty {
                             ReasoningCard(steps: replanReasoningSteps, isStreaming: isSaving)
@@ -1179,7 +1177,6 @@ private struct WorkflowPlanReviewView: View {
     @ViewBuilder
     private func planMetrics(_ plan: WorkflowPlanDTO) -> some View {
         planMetric("\(plan.dsl.nodes.count) 个步骤", icon: "point.3.connected.trianglepath.dotted")
-        planMetric("\(plan.estimatedTokens.formatted()) Token", icon: "gauge.with.dots.needle.50percent")
         planMetric(plan.allowNetwork ? "可联网补证" : "仅知识库", icon: plan.allowNetwork ? "network" : "internaldrive")
     }
 
@@ -1218,58 +1215,6 @@ private struct WorkflowPlanReviewView: View {
         ["person.crop.circle", "scope", "checkmark.seal"][min(index, 2)]
     }
 
-    private func configuration(plan: Binding<WorkflowPlanDTO>) -> some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            Text("执行边界").font(AppTheme.Typography.sectionTitle)
-            TextField("最终交付物", text: plan.deliverable)
-                .textFieldStyle(.roundedBorder)
-            Toggle(
-                "知识库无证据时允许联网补充",
-                isOn: Binding(
-                    get: { plan.wrappedValue.allowNetwork },
-                    set: { enabled in
-                        plan.wrappedValue.allowNetwork = enabled
-                        for index in plan.wrappedValue.dsl.nodes.indices {
-                            plan.wrappedValue.dsl.nodes[index].parameters.allowNetwork = enabled
-                        }
-                    }
-                )
-            )
-            Stepper(
-                "Token 上限：\(plan.wrappedValue.maxTokens.formatted())",
-                value: plan.maxTokens,
-                in: 4_000...999_999,
-                step: 5_000
-            )
-            if !availableKnowledgeScopes.isEmpty {
-                Text("知识范围").font(AppTheme.Typography.label)
-                ForEach(availableKnowledgeScopes, id: \.self) { scope in
-                    Toggle(
-                        scope,
-                        isOn: Binding(
-                            get: { plan.wrappedValue.knowledgeScope.contains(scope) },
-                            set: { enabled in
-                                if enabled {
-                                    if !plan.wrappedValue.knowledgeScope.contains(scope) {
-                                        plan.wrappedValue.knowledgeScope.append(scope)
-                                    }
-                                } else {
-                                    plan.wrappedValue.knowledgeScope.removeAll { $0 == scope }
-                                }
-                                for index in plan.wrappedValue.dsl.nodes.indices {
-                                    plan.wrappedValue.dsl.nodes[index].parameters.knowledgeScope = plan.wrappedValue.knowledgeScope
-                                }
-                            }
-                        )
-                    )
-                }
-            }
-        }
-        .padding(AppTheme.Spacing.lg)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg))
-    }
-
     private func nodeTimeline(plan: Binding<WorkflowPlanDTO>) -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             HStack {
@@ -1295,10 +1240,8 @@ private struct WorkflowPlanReviewView: View {
         do {
             async let loadedPlan = APIClient.shared.fetchWorkflowPlan(workflowId: workflow.id)
             async let loadedAgents = APIClient.shared.fetchTenantAgents()
-            async let loadedAccess = APIClient.shared.fetchKnowledgeAccess()
             plan = try await loadedPlan
             tenantAgents = (try? await loadedAgents) ?? []
-            availableKnowledgeScopes = (try? await loadedAccess)?.effectiveCategories ?? plan?.knowledgeScope ?? []
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -1544,16 +1487,6 @@ private struct WorkflowPlanNodeEditor: View {
                 }
                 .labelStyle(.iconOnly)
                 .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-                Stepper(
-                    "节点预算：\(node.parameters.maxTokens ?? 3000)",
-                    value: Binding(
-                        get: { node.parameters.maxTokens ?? 3000 },
-                        set: { node.parameters.maxTokens = $0 }
-                    ),
-                    in: 1000...32000,
-                    step: 1000
-                )
-                .font(AppTheme.Typography.micro)
             }
             .padding(AppTheme.Spacing.md)
             .background(AppTheme.Colors.cardBackground)

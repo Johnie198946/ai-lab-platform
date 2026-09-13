@@ -263,10 +263,12 @@ private struct WorkflowActivityMiniBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRunning: Bool {
-        ["planning", "building_agent"].contains(activity.model.phase)
+        ["clarifying_pending", "planning", "building_agent"].contains(activity.model.phase)
     }
 
     private var statusText: String {
+        if activity.model.phase == "clarifying" { return "等待确认需求" }
+        if activity.model.phase == "clarifying_pending" { return "正在阅读文档并收敛需求" }
         if activity.model.phase == "awaiting_approval" { return "方案可审阅" }
         if activity.model.phase == "needs_attention" { return "规划需要处理" }
         if let message = activity.model.events.last?.message { return message }

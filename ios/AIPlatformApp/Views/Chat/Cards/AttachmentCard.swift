@@ -44,7 +44,11 @@ public struct AttachmentCard: View {
                 Spacer()
 
                     if isLoading || block.state == .uploading || block.state == .compiling {
-                        ProgressView().tint(AppTheme.Colors.primary)
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                            .tint(AppTheme.Colors.primary)
+                            .frame(width: 72)
+                            .accessibilityLabel(block.state == .compiling ? "知识编译中" : "文档上传与解析中")
                     } else {
                         Image(systemName: stateIcon).foregroundColor(stateColor)
                     }

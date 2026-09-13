@@ -1409,6 +1409,8 @@ public struct WorkflowPlanDTO: Codable, Identifiable, Hashable {
     public let estimatedTokens: Int
     public var knowledgeScope: [String]
     public let validationErrors: [String]
+    public let contentHash: String
+    public let activationRevision: Int
     public var dsl: WorkflowDSLDTO
     public let frozenAt: String?
     public let createdAt: String?
@@ -1710,12 +1712,16 @@ public struct WorkflowPlanEditRequestDTO: Encodable {
     public let allowNetwork: Bool
     public let maxTokens: Int
     public let knowledgeScope: [String]
+    public let expectedHash: String
+    public let expectedRevision: Int
 
     enum CodingKeys: String, CodingKey {
         case dsl, deliverable
         case allowNetwork = "allow_network"
         case maxTokens = "max_tokens"
         case knowledgeScope = "knowledge_scope"
+        case expectedHash = "expected_hash"
+        case expectedRevision = "expected_revision"
     }
 }
 
@@ -2642,7 +2648,9 @@ public final class APIClient: ObservableObject {
                 deliverable: plan.deliverable,
                 allowNetwork: plan.allowNetwork,
                 maxTokens: plan.maxTokens,
-                knowledgeScope: plan.knowledgeScope
+                knowledgeScope: plan.knowledgeScope,
+                expectedHash: plan.contentHash,
+                expectedRevision: plan.activationRevision
             )
         )
         if updated.dsl.planId.isEmpty { updated.dsl.planId = updated.id }

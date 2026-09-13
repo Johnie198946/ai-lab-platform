@@ -3212,7 +3212,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         let sizeBytes = InboxFileManager.shared.fileSizeBytes(at: url) ?? 0
         if metadataAccess { url.stopAccessingSecurityScopedResource() }
         let sizeText = ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
-        let attachment = AttachmentBlock(fileName: name, fileType: attachmentFileType(for: url), fileSize: sizeText, state: .uploading, statusMessage: "正在上传原件")
+        let attachment = AttachmentBlock(fileName: name, fileType: attachmentFileType(for: url), fileSize: sizeText, state: .uploading, statusMessage: "正在上传并解析文档")
         let msg = ChatMessage(
             role: .user,
             content: "📄 正在上传文档：\(name)（\(sizeText)）",
@@ -3243,6 +3243,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         sourceDocumentId: receipt.sourceId
                     )
                     messages.append(ChatMessage(role: .assistant, content: "原件已安全保存，私有笔记已生成，知识编译正在后台进行。PPT 工作流已创建（\(workflow.workflow.id)）：需求确认、文档分析、逐页大纲、代表页设计、全稿验收。每个确认阶段都可以反复退回修改。"))
+                    WorkflowActivityCoordinator.shared.track(workflow.workflow)
                     appState?.pendingWorkflowId = workflow.workflow.id
                     commitSession()
                     await KnowledgeNoteStore.shared.restoreFromCloud()

@@ -984,11 +984,18 @@ def test_presentation_workflow_uses_presentation_questions_and_reads_source_in_a
             "title": "Deck",
             "description": "把文档做成 PPT",
             "desired_output": "可编辑 PPTX",
-            "requirements_snapshot": {"scenario_id": "document-to-presentation"},
+            "requirements_snapshot": {
+                "scenario_id": "document-to-presentation",
+                "source_document_evidence": "收入证明；月收入 20,000 元",
+            },
         },
     )()
-    assert clarification_payload(0, workflow)["dimension"] == "用途与受众"
-    assert requirement_confirmation_payload(workflow, [])["choices"][0] == "确认，开始分析文档"
+    first_question = clarification_payload(0, workflow)
+    assert first_question["dimension"] == "用途与受众"
+    assert "月收入 20,000 元" in first_question["question"]
+    confirmation = requirement_confirmation_payload(workflow, [])
+    assert confirmation["choices"][0] == "确认，开始分析文档"
+    assert "文档依据：收入证明" in confirmation["question"]
 
     plan = build_presentation_plan(workflow, plan_id="plan", knowledge_scope=[])
     run = {
