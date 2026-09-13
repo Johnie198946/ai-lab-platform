@@ -177,7 +177,10 @@ class ResearchDeposit:
         cron_writer = False
         decision_message = user_message
         cron_match = re.fullmatch(r"cron_([0-9a-f]{12})_[0-9_]+", str(scope.get("session_id") or ""))
-        if platform == "cron" and cron_match:
+        if cron_match:
+            # Cron workers do not consistently expose agent.platform even
+            # though the native session id is authoritative and immutable.
+            platform = "cron"
             from cron.jobs import get_job
             host_job = get_job(cron_match.group(1)) or {}
             if isinstance(host_job.get("prompt"), str) and host_job["prompt"].strip():
@@ -194,7 +197,7 @@ class ResearchDeposit:
                 return {"context": "[Research deposit blocked: no_save] No save permitted. Lifting requires verified same-material host consent; this host has no supported consent association."}
             if old.get("veto"):
                 return {"context": "[Research deposit blocked: no_save] Same-material consent association unavailable; explicit text alone cannot lift this veto."}
-            if not self.allowed(dict(kw, user_message=user_message), read_only=True):
+            if not self.allowed(dict(kw, platform=platform, user_message=user_message), read_only=True):
                 return None  # Policy is an overlay, never replace recovery evidence.
 
             if (cron_writer or old.get("control") or kw.get("task_purpose") in {"wiki_compile", "research_recovery"}
@@ -822,7 +825,15 @@ class ResearchDeposit:
                     "response_text": response_text + "\n\n[研究沉淀 blocked：无法核验保存；未进 Wiki。]"}
 
     def post(self, assistant_response="", **kw):
-        if explicit_no_save(kw.get("user_message") or ""):
+        user_message = kw.get("user_message") or ""
+        scope = self.scope(kw)
+        cron_match = re.fullmatch(r"cron_([0-9a-f]{12})_[0-9_]+", str(scope.get("session_id") or ""))
+        if cron_match:
+            from cron.jobs import get_job
+            host_job = get_job(cron_match.group(1)) or {}
+            if isinstance(host_job.get("prompt"), str) and host_job["prompt"].strip():
+                user_message = host_job["prompt"]
+        if explicit_no_save(user_message):
             self.pre(**kw)
         return self.verify_completion(assistant_response, **kw)
 

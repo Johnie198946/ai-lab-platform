@@ -498,12 +498,14 @@ class ResearchDepositionTests(unittest.TestCase):
         scope = dict(session_id="cron_f5b369363d63_20260913_120000",
                      turn_id="cron-turn",
                      task_id="cron:f5b369363d63:4dbdfed1067b43d58d03d2a53eadf439",
-                     platform="cron")
+                     platform="")
         loaded_skill_wrapper = "Skill policy examples: 只看看 / 不保存 / no_save；Wiki Writer 编译研究素材"
         with patch("cron.jobs.get_job", return_value={"prompt": "执行产业雷达深度研究并自动沉淀"}):
             result = self.begin(loaded_skill_wrapper, scope)
+            self.deposit.post("研究完成", user_message=loaded_skill_wrapper, **scope)
         self.assertIn("[Local research contract]", result["context"])
         record = self.ctx.state.get(self.deposit.key(self.deposit.scope(scope)))
+        self.assertFalse(record.get("veto"))
         association = record["consent_association"]
         self.assertEqual(record["save_policy"], "governed_auto")
         self.assertEqual(association["kind"], "cron_job_configuration")
