@@ -1,0 +1,2 @@
+# Main-content cleaning; install into this plugin's _html_dependencies directory.
+trafilatura==2.2.0
