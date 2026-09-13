@@ -128,7 +128,9 @@ def _load_trafilatura():
     except ImportError:
         dependencies = Path(__file__).resolve().parent / "_html_dependencies"
         if dependencies.is_dir() and str(dependencies) not in sys.path:
-            sys.path.insert(0, str(dependencies))
+            # Prefer Hermes' pinned packages; use the plugin bundle only for
+            # modules that the runtime does not already provide.
+            sys.path.append(str(dependencies))
         try:
             return import_module("trafilatura")
         except ImportError:
