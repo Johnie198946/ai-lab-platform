@@ -248,14 +248,15 @@ def _is_pure_supplied_translation(text: str) -> bool:
     """Keep translation-only turns out of the gate, not mixed judgments."""
     if not _PURE_TRANSLATION_RE.match(text or ""):
         return False
-    parts = re.split(r"[:：\n]", text or "", maxsplit=1)
-    if len(parts) == 2 and _PURE_TRANSLATION_RE.match(parts[0].strip()):
-        return True
-    return not re.search(
+    judgment = re.compile(
         r"(?:结合|判断|分析|核验|评估|合规|政策)|"
         r"\b(?:assess|evaluate|policy|compliance|analy[sz]e|check\s+it\s+against)\b",
-        text or "", re.I,
+        re.I,
     )
+    parts = re.split(r"[:：\n]", text or "", maxsplit=1)
+    if len(parts) == 2 and _PURE_TRANSLATION_RE.match(parts[0].strip()):
+        return not judgment.search(parts[0])
+    return not judgment.search(text or "")
 
 
 _SIMPLE_EXPLANATION_RE = re.compile(
