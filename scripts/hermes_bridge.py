@@ -1690,6 +1690,10 @@ _knowledge_gate_context = _PropagatedRequestContext("knowledge_consumption_gate_
 _knowledge_tool_registration_lock = threading.Lock()
 _knowledge_tool_session_lock = threading.RLock()
 _knowledge_tool_context_by_session: dict[str, dict[str, Any]] = {}
+_knowledge_tool_context_by_request: dict[str, dict[str, Any]] = {}
+_KNOWLEDGE_CONTEXT_MARKER_RE = re.compile(
+    r"\[SERVER_KNOWLEDGE_CONTEXT:([a-f0-9]{32})\]"
+)
 _knowledge_tool_registered = False
 _sandbox_tool_context = _PropagatedRequestContext("qws_sandbox_tool_context")
 _skill_route_context = _PropagatedRequestContext("qws_skill_route_context")
@@ -1706,6 +1710,12 @@ _app_capability_tools_registered = False
 
 def _active_knowledge_tool_context(kwargs: dict[str, Any]) -> dict[str, Any] | None:
     """Resolve the signed grant by Hermes session before thread-local fallback."""
+    marker = _KNOWLEDGE_CONTEXT_MARKER_RE.search(str(kwargs.get("user_task") or ""))
+    if marker:
+        with _knowledge_tool_session_lock:
+            context = _knowledge_tool_context_by_request.get(marker.group(1))
+        if isinstance(context, dict):
+            return context
     session_id = str(kwargs.get("session_id") or "")
     if session_id:
         with _knowledge_tool_session_lock:
@@ -8400,6 +8410,7 @@ def _run_agent_sync(
     original_goal = goal
     hermes_home_token: Any = None
     knowledge_request_context: dict[str, Any] | None = None
+    knowledge_request_key = uuid.uuid4().hex
     knowledge_session_key = str(hermes_sid or "")
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
@@ -8420,6 +8431,8 @@ def _run_agent_sync(
             "book_scope": dict((knowledge_claims or {}).get("book_scope") or {}),
         }
         _knowledge_tool_context.value = knowledge_request_context
+        with _knowledge_tool_session_lock:
+            _knowledge_tool_context_by_request[knowledge_request_key] = knowledge_request_context
         if knowledge_session_key:
             with _knowledge_tool_session_lock:
                 _knowledge_tool_context_by_session[knowledge_session_key] = knowledge_request_context
@@ -8582,6 +8595,7 @@ def _run_agent_sync(
             _knowledge_gate_context.value = knowledge_gate_state
             goal += preread_context
             agent_stream_q = _KnowledgeBarrierQueue(stream_q)
+        goal += f"\n\n[SERVER_KNOWLEDGE_CONTEXT:{knowledge_request_key}]"
         agent, session_db, route_context = _build_in_process_agent(
             goal, user_id, hermes_sid, agent_stream_q,
             allow_local_files=allow_local_files,
@@ -8787,6 +8801,8 @@ def _run_agent_sync(
             "usage": result_usage or {},
         })
     finally:
+        with _knowledge_tool_session_lock:
+            _knowledge_tool_context_by_request.pop(knowledge_request_key, None)
         if knowledge_session_key:
             with _knowledge_tool_session_lock:
                 if _knowledge_tool_context_by_session.get(knowledge_session_key) is knowledge_request_context:
