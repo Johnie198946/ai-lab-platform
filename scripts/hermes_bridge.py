@@ -1723,18 +1723,32 @@ def _active_knowledge_tool_context(
     if requested_book_id and requested_content_version:
         with _knowledge_tool_session_lock:
             candidates = list(_knowledge_tool_context_by_request.values())
-        matching = {
-            str(context.get("capability") or ""): context
-            for context in candidates
-            if isinstance(context, dict)
-            and str((context.get("book_scope") or {}).get("book_id") or "")
-            == requested_book_id
-            and str((context.get("book_scope") or {}).get("content_version") or "")
-            == requested_content_version
-            and context.get("capability")
-        }
-        # Fail closed if simultaneous tenants hold distinct grants for the
-        # same edition and Hermes omitted request/session metadata.
+        matching: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for context in candidates:
+            if not isinstance(context, dict) or not context.get("capability"):
+                continue
+            try:
+                claims = verify_capability(str(context["capability"]))
+            except KnowledgeScopeDenied:
+                continue
+            scope = claims.get("book_scope") or {}
+            if (
+                str(scope.get("book_id") or "") != requested_book_id
+                or str(scope.get("content_version") or "") != requested_content_version
+            ):
+                continue
+            authorization_key = (
+                str(claims.get("tenant_key") or ""),
+                str(claims.get("user_id") or ""),
+                str(claims.get("policy_version") or ""),
+                tuple(sorted(str(item) for item in (claims.get("scopes") or []))),
+                tuple(sorted(str(item) for item in (claims.get("sources") or []))),
+                requested_book_id,
+                requested_content_version,
+            )
+            matching[authorization_key] = context
+        # Multiple tokens from one request are equivalent grants. Distinct
+        # tenant/user policy identities remain ambiguous and fail closed.
         if len(matching) == 1:
             return next(iter(matching.values()))
     session_id = str(kwargs.get("session_id") or "")
