@@ -518,6 +518,27 @@ final class ReaderFixtureUITests: XCTestCase {
         attachScreenshot(named: "fixture-metadata-source-action")
     }
 
+    func testReaderQuestionKeyboardDismissesWhenTappingBlankSpace() {
+        app.launchArguments = [
+            "-prototypePreview", "v4/08-reader-question-annotation-v4-p02"
+        ]
+        app.launchEnvironment["AI_LAB_E2E_DISABLE_ANIMATIONS"] = "1"
+        app.launch()
+
+        let input = app.textFields["reader-question-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap()
+        input.typeText("是什么意思")
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+
+        let sheet = app.scrollViews["reader-question-sheet"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        sheet.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.18)).tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: keyboard)
+        waitForExpectations(timeout: 5)
+    }
+
     func testLongReaderSurvivesSubscriptionFailureAndNavigatesExactSections() {
         app.launchArguments = [
             "-bookshelfPreview", "-bookshelfBookPreview", "-bookshelfSubscribedPreview",

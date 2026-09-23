@@ -3560,6 +3560,7 @@ struct ReaderQuestionSheet: View {
     @State private var errorMessage: String?
     @State private var isAsking = false
     @State private var statusText = ""
+    @FocusState private var isQuestionFocused: Bool
 
     private var isEnglish: Bool { ReadingLanguagePresentation.isEnglish(excerpt) }
     private var suggestions: [String] {
@@ -3641,7 +3642,11 @@ struct ReaderQuestionSheet: View {
             .padding(.horizontal, AppTheme.Metrics.contentGutter)
             .padding(.top, AppTheme.Spacing.sm)
             .padding(.bottom, AppTheme.Spacing.xl)
+            .contentShape(Rectangle())
+            .onTapGesture { isQuestionFocused = false }
         }
+        .accessibilityIdentifier("reader-question-sheet")
+        .scrollDismissesKeyboard(.interactively)
         .background(Color(hex: "FFFEFB").ignoresSafeArea())
         .presentationDetents([.fraction(0.72), .large])
         .presentationDragIndicator(.hidden)
@@ -3651,6 +3656,8 @@ struct ReaderQuestionSheet: View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             TextField(isEnglish ? "Ask a follow-up…" : "继续问这段内容…", text: $question, axis: .vertical)
                 .lineLimit(2...5)
+                .focused($isQuestionFocused)
+                .accessibilityIdentifier("reader-question-input")
                 .padding(.horizontal, AppTheme.Spacing.md)
                 .padding(.top, AppTheme.Spacing.md)
             HStack {
@@ -3668,6 +3675,7 @@ struct ReaderQuestionSheet: View {
                 .buttonStyle(SoftButtonStyle())
                 .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isAsking || question.count > 200)
                 .accessibilityLabel(isEnglish ? "Send question" : "发送问题")
+                .accessibilityIdentifier("reader-question-send")
             }
             .padding(.horizontal, AppTheme.Spacing.sm)
             .padding(.bottom, AppTheme.Spacing.sm)
@@ -3729,6 +3737,7 @@ struct ReaderQuestionSheet: View {
     private func submit() async {
         let value = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
+        isQuestionFocused = false
         lastQuestion = value
         isAsking = true
         answer = ""
