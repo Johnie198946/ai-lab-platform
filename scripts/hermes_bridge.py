@@ -1708,14 +1708,35 @@ _app_capability_tool_registration_lock = threading.Lock()
 _app_capability_tools_registered = False
 
 
-def _active_knowledge_tool_context(kwargs: dict[str, Any]) -> dict[str, Any] | None:
-    """Resolve the signed grant by Hermes session before thread-local fallback."""
+def _active_knowledge_tool_context(
+    kwargs: dict[str, Any], args: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Resolve one unambiguous signed grant before thread-local fallback."""
     marker = _KNOWLEDGE_CONTEXT_MARKER_RE.search(str(kwargs.get("user_task") or ""))
     if marker:
         with _knowledge_tool_session_lock:
             context = _knowledge_tool_context_by_request.get(marker.group(1))
         if isinstance(context, dict):
             return context
+    requested_book_id = str((args or {}).get("book_id") or "")
+    requested_content_version = str((args or {}).get("content_version") or "")
+    if requested_book_id and requested_content_version:
+        with _knowledge_tool_session_lock:
+            candidates = list(_knowledge_tool_context_by_request.values())
+        matching = {
+            str(context.get("capability") or ""): context
+            for context in candidates
+            if isinstance(context, dict)
+            and str((context.get("book_scope") or {}).get("book_id") or "")
+            == requested_book_id
+            and str((context.get("book_scope") or {}).get("content_version") or "")
+            == requested_content_version
+            and context.get("capability")
+        }
+        # Fail closed if simultaneous tenants hold distinct grants for the
+        # same edition and Hermes omitted request/session metadata.
+        if len(matching) == 1:
+            return next(iter(matching.values()))
     session_id = str(kwargs.get("session_id") or "")
     if session_id:
         with _knowledge_tool_session_lock:
@@ -1836,7 +1857,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         return json.dumps(
             {"success": False, "error": "query_required"}, ensure_ascii=False
         )
-    context = _active_knowledge_tool_context(_kwargs)
+    context = _active_knowledge_tool_context(_kwargs, args)
     if not isinstance(context, dict) or not context.get("capability"):
         return json.dumps(
             ({"success": False, "error": "knowledge_scope_unavailable", "fallback_recommended": False}
