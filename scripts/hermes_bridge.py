@@ -1725,7 +1725,7 @@ def _active_knowledge_tool_context(
     if requested_book_id and requested_content_version:
         with _knowledge_tool_session_lock:
             candidates = list(_knowledge_tool_context_by_request.values())
-        matching: dict[tuple[Any, ...], dict[str, Any]] = {}
+        matching: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         for context in candidates:
             if not isinstance(context, dict) or not context.get("capability"):
                 continue
@@ -1748,11 +1748,18 @@ def _active_knowledge_tool_context(
                 requested_book_id,
                 requested_content_version,
             )
-            matching[authorization_key] = context
+            matching.setdefault(authorization_key, []).append(context)
         # Multiple tokens from one request are equivalent grants. Distinct
         # tenant/user policy identities remain ambiguous and fail closed.
         if len(matching) == 1:
-            return next(iter(matching.values()))
+            equivalent_contexts = next(iter(matching.values()))
+            selected = dict(equivalent_contexts[-1])
+            selected["equivalent_gate_states"] = [
+                item.get("gate_state")
+                for item in equivalent_contexts
+                if isinstance(item.get("gate_state"), dict)
+            ]
+            return selected
     session_id = str(kwargs.get("session_id") or "")
     if session_id:
         with _knowledge_tool_session_lock:
@@ -2047,8 +2054,14 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         )
         payload["detail"] = str(exc)[:160]
         return json.dumps(payload, ensure_ascii=False)
-    gate_state = context.get("gate_state")
-    if isinstance(gate_state, dict):
+    gate_states = list(context.get("equivalent_gate_states") or [])
+    if isinstance(context.get("gate_state"), dict):
+        gate_states.append(context["gate_state"])
+    seen_gate_states: set[int] = set()
+    for gate_state in gate_states:
+        if not isinstance(gate_state, dict) or id(gate_state) in seen_gate_states:
+            continue
+        seen_gate_states.add(id(gate_state))
         _observe_internal_search_result(gate_state, docs)
     if book_request:
         return json.dumps(docs, ensure_ascii=False)
