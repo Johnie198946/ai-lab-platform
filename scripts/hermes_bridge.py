@@ -8600,6 +8600,10 @@ def _run_agent_sync(
         # （hermes_sid=None 首请求）。显式迁移/灾备快照必须先进入 Hermes
         # SessionDB，再建立映射；正常空能力信封不会写入任何客户端历史。
         agent_sid = getattr(agent, "session_id", None) or hermes_sid
+        if agent_sid and knowledge_request_context is not None:
+            knowledge_session_key = str(agent_sid)
+            with _knowledge_tool_session_lock:
+                _knowledge_tool_context_by_session[knowledge_session_key] = knowledge_request_context
         if (agent_config or {}).get("knowledge_stage_only") is True:
             if not hermes_sid or getattr(agent, "session_id", None) != hermes_sid:
                 raise RuntimeError("knowledge stage session isolation failed closed")
