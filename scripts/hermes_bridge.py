@@ -2816,6 +2816,16 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
             },
             handler=lambda args, **kwargs: _user_note_search_tool(args, **kwargs),
         )
+        # Keep the platform Knowledge Gateway in Hermes' direct tool surface
+        # whenever this request enables the knowledge_gateway toolset. Deferred
+        # tool_call execution runs outside the request ContextVar that carries
+        # the signed tenant/book capability and can therefore reuse a stale
+        # grant. Direct execution preserves the request-scoped capability.
+        import tools.tool_search as hermes_tool_search
+
+        hermes_tool_search._DIRECT_SURFACE_TOOLSETS = frozenset(
+            set(hermes_tool_search._DIRECT_SURFACE_TOOLSETS) | {"knowledge_gateway"}
+        )
         _knowledge_tool_registered = True
 
 
