@@ -100,7 +100,8 @@ def test_real_bridge_gateway_whole_book_lossless(longbook, monkeypatch):
     monkeypatch.setattr(bridge.httpx, "post", lambda url, *, headers, json, timeout:
                         longbook["client"].post("/api/internal/knowledge/search", headers=headers, json=json))
     bridge._knowledge_tool_context.value = {"capability": context.capability,
-        "scopes": claims["scopes"], "sources": claims["sources"]}
+        "scopes": claims["scopes"], "sources": claims["sources"],
+        "book_scope": claims["book_scope"]}
     try:
         args, pages = request_for(longbook), []
         while args:

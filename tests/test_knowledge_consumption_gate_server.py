@@ -67,6 +67,54 @@ def test_selected_book_quote_bypasses_only_the_generic_wiki_gate():
     )
 
 
+def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeypatch):
+    observed = []
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "success": True,
+                "book_id": "book-1",
+                "content_version": "v3",
+                "markdown": "哈希正文",
+            }
+
+    def post(url, *, headers, json, timeout):
+        observed.append(json)
+        return Response()
+
+    monkeypatch.setattr(bridge.httpx, "post", post)
+    bridge._knowledge_tool_context.value = {
+        "capability": "signed-capability-token",
+        "scopes": ["knowledge/general/public"],
+        "sources": ["tenant_knowledge"],
+        "book_scope": {"book_id": "book-1", "content_version": "v3"},
+    }
+    try:
+        payload = json.loads(bridge._knowledge_search_tool({"query": "哈希是什么意思"}))
+        denied = json.loads(bridge._knowledge_search_tool({
+            "query": "哈希是什么意思", "book_id": "book-2"
+        }))
+    finally:
+        bridge._knowledge_tool_context.value = None
+
+    assert payload["success"] is True
+    assert len(observed) == 1
+    assert observed[0]["query"] == "哈希是什么意思"
+    assert observed[0]["book_id"] == "book-1"
+    assert observed[0]["content_version"] == "v3"
+    assert denied == {
+        "success": False,
+        "error": "book_scope_denied",
+        "fallback_recommended": False,
+    }
+
+
 def test_preread_top3_budget_and_delta_barrier(monkeypatch):
     docs = [{
         "path": f"wiki/{i}.md", "version": "v1", "citation": f"knowledge:wiki/{i}.md",

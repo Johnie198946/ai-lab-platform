@@ -1810,6 +1810,38 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
              if book_request else _knowledge_fallback_payload("knowledge_scope_unavailable", query=query)),
             ensure_ascii=False,
         )
+    trusted_book_scope = context.get("book_scope")
+    if isinstance(trusted_book_scope, dict) and trusted_book_scope:
+        trusted_book_id = str(trusted_book_scope.get("book_id") or "")
+        trusted_content_version = str(trusted_book_scope.get("content_version") or "")
+        requested_book_id = str(book_request.get("book_id") or "")
+        requested_content_version = str(book_request.get("content_version") or "")
+        wiki_selectors_requested = any(
+            args.get(key) not in (None, "", [])
+            for key in ("paths", "topics", "category_scope", "sources")
+        )
+        if (
+            not trusted_book_id
+            or not trusted_content_version
+            or (requested_book_id and requested_book_id != trusted_book_id)
+            or (
+                requested_content_version
+                and requested_content_version != trusted_content_version
+            )
+            or wiki_selectors_requested
+        ):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "book_scope_denied",
+                    "fallback_recommended": False,
+                },
+                ensure_ascii=False,
+            )
+        # The signed reading scope is authoritative. If the model omits its
+        # selectors, retain the selected-book route instead of widening to Wiki.
+        book_request["book_id"] = trusted_book_id
+        book_request["content_version"] = trusted_content_version
     if "tenant_knowledge" not in set(
         context.get("sources") or ["tenant_knowledge"]
     ):
@@ -8257,6 +8289,7 @@ def _run_agent_sync(
             "sources": list(
                 (knowledge_claims or {}).get("sources") or ["tenant_knowledge"]
             ),
+            "book_scope": dict((knowledge_claims or {}).get("book_scope") or {}),
         }
         if sandbox is None:
             raise RuntimeError("tenant_sandbox_unavailable")
