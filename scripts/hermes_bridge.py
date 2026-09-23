@@ -8400,6 +8400,7 @@ def _run_agent_sync(
     original_goal = goal
     hermes_home_token: Any = None
     knowledge_request_context: dict[str, Any] | None = None
+    knowledge_session_key = str(hermes_sid or "")
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
         # Hermes gateway consumer that can re-enter a detached child result.
@@ -8419,8 +8420,9 @@ def _run_agent_sync(
             "book_scope": dict((knowledge_claims or {}).get("book_scope") or {}),
         }
         _knowledge_tool_context.value = knowledge_request_context
-        with _knowledge_tool_session_lock:
-            _knowledge_tool_context_by_session[session_id] = knowledge_request_context
+        if knowledge_session_key:
+            with _knowledge_tool_session_lock:
+                _knowledge_tool_context_by_session[knowledge_session_key] = knowledge_request_context
         if sandbox is None:
             raise RuntimeError("tenant_sandbox_unavailable")
         from hermes_constants import set_hermes_home_override
@@ -8781,9 +8783,10 @@ def _run_agent_sync(
             "usage": result_usage or {},
         })
     finally:
-        with _knowledge_tool_session_lock:
-            if _knowledge_tool_context_by_session.get(session_id) is knowledge_request_context:
-                _knowledge_tool_context_by_session.pop(session_id, None)
+        if knowledge_session_key:
+            with _knowledge_tool_session_lock:
+                if _knowledge_tool_context_by_session.get(knowledge_session_key) is knowledge_request_context:
+                    _knowledge_tool_context_by_session.pop(knowledge_session_key, None)
         _knowledge_tool_context.value = None
         _knowledge_gate_context.value = None
         _client_context_tool_context.value = None
