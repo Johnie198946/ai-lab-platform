@@ -89,6 +89,9 @@ def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeyp
         return Response()
 
     monkeypatch.setattr(bridge.httpx, "post", post)
+    monkeypatch.setattr(bridge, "verify_capability", lambda token: {
+        "book_scope": {"book_id": "book-1", "content_version": "v3"}
+    })
     bridge._knowledge_tool_context.value = {
         "capability": "signed-capability-token",
         "scopes": ["knowledge/general/public"],
@@ -96,9 +99,7 @@ def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeyp
         "book_scope": {"book_id": "book-1", "content_version": "v3"},
     }
     try:
-        payload = json.loads(bridge._knowledge_search_tool({
-            "query": "哈希是什么意思", "operation": "read", "page": 1
-        }))
+        payload = json.loads(bridge._knowledge_search_tool({"query": "哈希是什么意思"}))
         denied = json.loads(bridge._knowledge_search_tool({
             "query": "哈希是什么意思", "book_id": "book-2"
         }))
@@ -110,7 +111,7 @@ def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeyp
     assert observed[0]["query"] == "哈希是什么意思"
     assert observed[0]["book_id"] == "book-1"
     assert observed[0]["content_version"] == "v3"
-    assert observed[0]["page"] == 0
+
     assert denied == {
         "success": False,
         "error": "book_scope_denied",

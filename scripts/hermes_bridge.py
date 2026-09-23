@@ -1811,6 +1811,19 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             ensure_ascii=False,
         )
     trusted_book_scope = context.get("book_scope")
+    if not trusted_book_scope and book_request:
+        try:
+            trusted_claims = verify_capability(str(context["capability"]))
+        except KnowledgeScopeDenied:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "knowledge_scope_denied",
+                    "fallback_recommended": False,
+                },
+                ensure_ascii=False,
+            )
+        trusted_book_scope = trusted_claims.get("book_scope")
     if isinstance(trusted_book_scope, dict) and trusted_book_scope:
         trusted_book_id = str(trusted_book_scope.get("book_id") or "")
         trusted_content_version = str(trusted_book_scope.get("content_version") or "")
@@ -1842,15 +1855,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         # selectors, retain the selected-book route instead of widening to Wiki.
         book_request["book_id"] = trusted_book_id
         book_request["content_version"] = trusted_content_version
-        if (
-            str(book_request.get("operation") or "read") == "read"
-            and book_request.get("page") == 1
-            and not context.get("book_read_started")
-        ):
-            # Models often interpret an initial page as human page 1 while the
-            # gateway continuation contract is zero-based. Normalize only the
-            # first read; later page=1 values returned by `next` remain intact.
-            book_request["page"] = 0
+
     if "tenant_knowledge" not in set(
         context.get("sources") or ["tenant_knowledge"]
     ):
@@ -1917,8 +1922,6 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         payload["detail"] = str(exc)[:160]
         return json.dumps(payload, ensure_ascii=False)
     if book_request:
-        if isinstance(docs, dict) and str(docs.get("markdown") or ""):
-            context["book_read_started"] = True
         return json.dumps(docs, ensure_ascii=False)
     gateway_status = docs.get("retrieval_status") if isinstance(docs, dict) else None
     if isinstance(docs, dict):
