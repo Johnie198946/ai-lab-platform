@@ -1652,7 +1652,14 @@ def _knowledge_gateway_search(
         timeout=timeout_seconds,
     )
     if response.status_code == 403:
-        raise PermissionError("knowledge_scope_denied")
+        error = "knowledge_scope_denied"
+        try:
+            detail = response.json().get("detail")
+            if isinstance(detail, dict) and detail.get("code"):
+                error = str(detail["code"])
+        except (TypeError, ValueError):
+            pass
+        raise PermissionError(error)
     response.raise_for_status()
     payload = response.json()
     if book_request is not None:
@@ -1811,7 +1818,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             ensure_ascii=False,
         )
     trusted_book_scope = context.get("book_scope")
-    if not trusted_book_scope and book_request:
+    if book_request:
         try:
             trusted_claims = verify_capability(str(context["capability"]))
         except KnowledgeScopeDenied:
@@ -1893,9 +1900,13 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             with_status=True,
             **gateway_options,
         )
-    except PermissionError:
+    except PermissionError as exc:
         if book_request:
-            return json.dumps({"success": False, "error": "book_scope_denied", "fallback_recommended": False})
+            return json.dumps({
+                "success": False,
+                "error": str(exc) or "book_scope_denied",
+                "fallback_recommended": False,
+            })
         return json.dumps(
             _knowledge_fallback_payload("knowledge_scope_denied", query=query),
             ensure_ascii=False,
