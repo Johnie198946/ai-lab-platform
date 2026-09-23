@@ -2497,20 +2497,33 @@ def _record_knowledge_gate_tool_result(
     state = getattr(_knowledge_gate_context, "value", None)
     if not isinstance(state, dict):
         return
+    args = function_args
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (TypeError, ValueError):
+            args = {}
     effective_tool = tool_name
     if tool_name == "tool_call":
-        args = function_args
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (TypeError, ValueError):
-                args = {}
         effective_tool = str((args or {}).get("name") or "") if isinstance(args, dict) else ""
     succeeded = _knowledge_result_succeeded(result)
     state.setdefault("tool_results", []).append(
         f"{effective_tool or tool_name}:{'success' if succeeded else 'error'}"
     )
     if effective_tool == "knowledge_search":
+        if succeeded and isinstance(args, dict):
+            book_id = str(args.get("book_id") or "")
+            content_version = str(args.get("content_version") or "")
+            if book_id and content_version:
+                state["book_evidence"] = {
+                    "book_id": book_id,
+                    "content_version": content_version,
+                    "section": str(args.get("section") or ""),
+                }
+                state["consumed_internal_knowledge"] = True
+                state["internal_context_exposed"] = True
+                state["status"] = "matched"
+                state["failure_kind"] = "none"
         _observe_internal_search_result(state, result)
         return
     if effective_tool not in {"web_search", "web_extract", "browser_exec"} or not succeeded:
@@ -2590,8 +2603,34 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
             failure_kind = "system"
     elif book_evidence:
         try:
+            book_token = token
+            claims = verify_capability(token)
+            if not claims.get("book_scope"):
+                policy = KnowledgePolicy(
+                    tenant_key=str(claims.get("tenant_key") or ""),
+                    org_id=str(claims.get("org_id") or ""),
+                    plan_id="",
+                    plan_status="",
+                    wallet=frozenset(),
+                    entitled_yellow=frozenset(),
+                    effective_categories=frozenset(
+                        str(item) for item in (claims.get("scopes") or [])
+                    ),
+                    policy_version=str(claims.get("policy_version") or ""),
+                    entitlement_stale=False,
+                )
+                book_token = mint_capability(
+                    policy,
+                    subject_id=str(claims.get("subject_id") or ""),
+                    entry_point=str(claims.get("entry_point") or "selected_book_revalidation"),
+                    user_id=str(claims.get("user_id") or ""),
+                    book_scope={
+                        "book_id": str(book_evidence.get("book_id") or ""),
+                        "content_version": str(book_evidence.get("content_version") or ""),
+                    },
+                )
             live_book = _knowledge_gateway_search(
-                token,
+                book_token,
                 query="live selected-book authorization barrier",
                 sources=["tenant_knowledge"],
                 include_content=False,
