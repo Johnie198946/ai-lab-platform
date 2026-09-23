@@ -137,10 +137,14 @@ def test_selected_book_result_is_revalidated_without_wiki_citation(monkeypatch):
         "web_urls": set(),
     }
     bridge._observe_internal_search_result(state, {
-        "book_id": "book-1",
-        "content_version": "v3",
-        "section": "section-1",
-        "markdown": "哈希用于验证内容是否改变。",
+        "success": True,
+        "error": None,
+        "result": json.dumps({
+            "book_id": "book-1",
+            "content_version": "v3",
+            "section": "section-1",
+            "markdown": "哈希用于验证内容是否改变。",
+        }, ensure_ascii=False),
     })
     monkeypatch.setattr(bridge, "_knowledge_gateway_search", lambda *args, **kwargs: {
         "book_id": "book-1",

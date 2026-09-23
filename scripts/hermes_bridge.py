@@ -2350,8 +2350,8 @@ def _structured_tool_result(result: Any) -> dict[str, Any] | None:
         return None
     if payload.get("success", True) is False or payload.get("error"):
         return payload
-    if "result" in payload and not any(
-        key in payload for key in ("docs", "retrieval_status", "error")
+    if "result" in payload and not (
+        payload.get("docs") or payload.get("retrieval_status") or payload.get("error")
     ):
         nested = payload.get("result")
         try:
