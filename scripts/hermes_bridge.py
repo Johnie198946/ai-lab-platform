@@ -1831,6 +1831,18 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
                 ensure_ascii=False,
             )
         trusted_book_scope = trusted_claims.get("book_scope")
+        if not trusted_book_scope:
+            return json.dumps({
+                "success": False,
+                "error": "signed_book_scope_missing",
+                "fallback_recommended": False,
+            }, ensure_ascii=False)
+        if not trusted_claims.get("user_id"):
+            return json.dumps({
+                "success": False,
+                "error": "signed_book_user_missing",
+                "fallback_recommended": False,
+            }, ensure_ascii=False)
     if isinstance(trusted_book_scope, dict) and trusted_book_scope:
         trusted_book_id = str(trusted_book_scope.get("book_id") or "")
         trusted_content_version = str(trusted_book_scope.get("content_version") or "")

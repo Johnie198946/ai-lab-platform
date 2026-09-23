@@ -90,6 +90,7 @@ def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeyp
 
     monkeypatch.setattr(bridge.httpx, "post", post)
     monkeypatch.setattr(bridge, "verify_capability", lambda token: {
+        "user_id": "reader-1",
         "book_scope": {"book_id": "book-1", "content_version": "v3"}
     })
     bridge._knowledge_tool_context.value = {
