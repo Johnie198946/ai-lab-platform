@@ -93,19 +93,22 @@ def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeyp
         "user_id": "reader-1",
         "book_scope": {"book_id": "book-1", "content_version": "v3"}
     })
-    bridge._knowledge_tool_context.value = {
+    bridge._knowledge_tool_context.value = None
+    bridge._knowledge_tool_context_by_session["hermes-session-1"] = {
         "capability": "signed-capability-token",
         "scopes": ["knowledge/general/public"],
         "sources": ["tenant_knowledge"],
         "book_scope": {"book_id": "book-1", "content_version": "v3"},
     }
     try:
-        payload = json.loads(bridge._knowledge_search_tool({"query": "哈希是什么意思"}))
+        payload = json.loads(bridge._knowledge_search_tool(
+            {"query": "哈希是什么意思"}, session_id="hermes-session-1"
+        ))
         denied = json.loads(bridge._knowledge_search_tool({
             "query": "哈希是什么意思", "book_id": "book-2"
-        }))
+        }, session_id="hermes-session-1"))
     finally:
-        bridge._knowledge_tool_context.value = None
+        bridge._knowledge_tool_context_by_session.pop("hermes-session-1", None)
 
     assert payload["success"] is True
     assert len(observed) == 1

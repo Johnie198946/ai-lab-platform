@@ -1688,6 +1688,8 @@ class _PropagatedRequestContext:
 _knowledge_tool_context = _PropagatedRequestContext("qws_knowledge_tool_context")
 _knowledge_gate_context = _PropagatedRequestContext("knowledge_consumption_gate_context")
 _knowledge_tool_registration_lock = threading.Lock()
+_knowledge_tool_session_lock = threading.RLock()
+_knowledge_tool_context_by_session: dict[str, dict[str, Any]] = {}
 _knowledge_tool_registered = False
 _sandbox_tool_context = _PropagatedRequestContext("qws_sandbox_tool_context")
 _skill_route_context = _PropagatedRequestContext("qws_skill_route_context")
@@ -1700,6 +1702,20 @@ _knowledge_workspace_tool_registration_lock = threading.Lock()
 _knowledge_workspace_tools_registered = False
 _app_capability_tool_registration_lock = threading.Lock()
 _app_capability_tools_registered = False
+
+
+def _active_knowledge_tool_context(kwargs: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the signed grant by Hermes session before thread-local fallback."""
+    session_id = str(kwargs.get("session_id") or "")
+    if session_id:
+        with _knowledge_tool_session_lock:
+            context = _knowledge_tool_context_by_session.get(session_id)
+        if isinstance(context, dict):
+            return context
+    context = getattr(_knowledge_tool_context, "value", None)
+    return context if isinstance(context, dict) else None
+
+
 _NOTE_DRAFT_REQUEST_RE = re.compile(
     r"(?:总结|整理|保存|入库|记录|生成|完善|补充|修改|更新).{0,40}(?:笔记|note)"
     r"|(?:笔记|note).{0,40}(?:保存|入库|总结|整理|完善|补充|修改|更新)"
@@ -1810,7 +1826,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         return json.dumps(
             {"success": False, "error": "query_required"}, ensure_ascii=False
         )
-    context = getattr(_knowledge_tool_context, "value", None)
+    context = _active_knowledge_tool_context(_kwargs)
     if not isinstance(context, dict) or not context.get("capability"):
         return json.dumps(
             ({"success": False, "error": "knowledge_scope_unavailable", "fallback_recommended": False}
@@ -2589,7 +2605,7 @@ def _inline_user_note_matches(query: str, notes: list[dict[str, Any]], limit: in
 
 def _user_note_search_tool(args: dict[str, Any], **_kwargs) -> str:
     """Search only the authenticated user's synced notes through the Gateway."""
-    context = getattr(_knowledge_tool_context, "value", None)
+    context = _active_knowledge_tool_context(_kwargs)
     if not isinstance(context, dict) or not context.get("capability"):
         return json.dumps(
             {"success": False, "error": "knowledge_scope_unavailable"},
@@ -8383,6 +8399,7 @@ def _run_agent_sync(
     execution_started = False
     original_goal = goal
     hermes_home_token: Any = None
+    knowledge_request_context: dict[str, Any] | None = None
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
         # Hermes gateway consumer that can re-enter a detached child result.
@@ -8393,7 +8410,7 @@ def _run_agent_sync(
         from gateway.session_context import declare_stateless_channel
 
         declare_stateless_channel()
-        _knowledge_tool_context.value = {
+        knowledge_request_context = {
             "capability": knowledge_capability,
             "scopes": list((knowledge_claims or {}).get("scopes") or []),
             "sources": list(
@@ -8401,6 +8418,9 @@ def _run_agent_sync(
             ),
             "book_scope": dict((knowledge_claims or {}).get("book_scope") or {}),
         }
+        _knowledge_tool_context.value = knowledge_request_context
+        with _knowledge_tool_session_lock:
+            _knowledge_tool_context_by_session[session_id] = knowledge_request_context
         if sandbox is None:
             raise RuntimeError("tenant_sandbox_unavailable")
         from hermes_constants import set_hermes_home_override
@@ -8761,6 +8781,9 @@ def _run_agent_sync(
             "usage": result_usage or {},
         })
     finally:
+        with _knowledge_tool_session_lock:
+            if _knowledge_tool_context_by_session.get(session_id) is knowledge_request_context:
+                _knowledge_tool_context_by_session.pop(session_id, None)
         _knowledge_tool_context.value = None
         _knowledge_gate_context.value = None
         _client_context_tool_context.value = None
