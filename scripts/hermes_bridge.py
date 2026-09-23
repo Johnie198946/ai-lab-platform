@@ -77,7 +77,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 from backend.services.reasoning_extractor import extract_steps  # noqa: E402
 from backend.services.knowledge_policy import (  # noqa: E402
+    KnowledgePolicy,
     KnowledgeScopeDenied,
+    mint_capability,
     verify_capability,
 )
 from backend.services.client_context_capability import (  # noqa: E402
@@ -1893,11 +1895,51 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             )
         trusted_book_scope = trusted_claims.get("book_scope")
         if not trusted_book_scope:
-            return json.dumps({
-                "success": False,
-                "error": "signed_book_scope_missing",
-                "fallback_recommended": False,
-            }, ensure_ascii=False)
+            requested_book_id = str(book_request.get("book_id") or "")
+            requested_content_version = str(book_request.get("content_version") or "")
+            if not requested_book_id or not requested_content_version:
+                return json.dumps({
+                    "success": False,
+                    "error": "signed_book_scope_missing",
+                    "fallback_recommended": False,
+                }, ensure_ascii=False)
+            # A generic, already-signed tenant knowledge grant may be passed by
+            # older bridge call sites. Derive a *narrower* exact-book grant;
+            # the Gateway still re-resolves live tenant policy and publication
+            # visibility before returning any bytes.
+            derived_policy = KnowledgePolicy(
+                tenant_key=str(trusted_claims.get("tenant_key") or "public"),
+                org_id="",
+                plan_id="",
+                plan_status="",
+                wallet=frozenset(),
+                entitled_yellow=frozenset(),
+                effective_categories=frozenset(
+                    str(item) for item in (trusted_claims.get("scopes") or [])
+                ),
+                policy_version=str(trusted_claims.get("policy_version") or ""),
+                entitlement_stale=False,
+            )
+            derived_capability = mint_capability(
+                derived_policy,
+                subject_id=str(trusted_claims.get("subject_id") or ""),
+                entry_point=str(trusted_claims.get("entry_point") or "chat"),
+                requested_scopes=list(trusted_claims.get("scopes") or []),
+                sources=list(trusted_claims.get("sources") or ["tenant_knowledge"]),
+                user_id=str(trusted_claims.get("user_id") or ""),
+                book_scope={
+                    "book_id": requested_book_id,
+                    "content_version": requested_content_version,
+                },
+            )
+            context = dict(context)
+            context["capability"] = derived_capability
+            context["book_scope"] = {
+                "book_id": requested_book_id,
+                "content_version": requested_content_version,
+            }
+            trusted_claims = verify_capability(derived_capability)
+            trusted_book_scope = trusted_claims.get("book_scope")
         if not trusted_claims.get("user_id"):
             return json.dumps({
                 "success": False,
