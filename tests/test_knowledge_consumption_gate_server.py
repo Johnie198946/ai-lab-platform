@@ -115,6 +115,39 @@ def test_selected_book_tool_uses_signed_scope_when_model_omits_selectors(monkeyp
     }
 
 
+def test_selected_book_result_is_revalidated_without_wiki_citation(monkeypatch):
+    state = {
+        "status": "no_match",
+        "requirement": "required",
+        "required_internal_knowledge": True,
+        "docs": [],
+        "tool_results": [],
+        "web_succeeded": False,
+        "web_urls": set(),
+    }
+    bridge._observe_internal_search_result(state, {
+        "book_id": "book-1",
+        "content_version": "v3",
+        "section": "section-1",
+        "markdown": "哈希用于验证内容是否改变。",
+    })
+    monkeypatch.setattr(bridge, "_knowledge_gateway_search", lambda *args, **kwargs: {
+        "book_id": "book-1",
+        "content_version": "v3",
+        "toc": [{"id": "section-1", "title": "第一章"}],
+    })
+
+    answer, receipt = bridge._finalize_knowledge_gate(
+        "哈希用于验证内容是否改变。", "signed-capability-token", state
+    )
+
+    assert "门禁未通过" not in answer
+    assert receipt["decision"] == "allowed_internal"
+    assert receipt["semantic"] == "selected_book_retrieved"
+    assert receipt["consumption"] == "selected_book"
+    assert receipt["versions"] == {"book:book-1": "v3"}
+
+
 def test_preread_top3_budget_and_delta_barrier(monkeypatch):
     docs = [{
         "path": f"wiki/{i}.md", "version": "v1", "citation": f"knowledge:wiki/{i}.md",

@@ -2256,6 +2256,20 @@ def _observe_internal_search_result(state: dict[str, Any], result: Any) -> None:
             state["status"] = status
             state["failure_kind"] = failure
         return
+    book_id = str(payload.get("book_id") or "")
+    content_version = str(payload.get("content_version") or "")
+    markdown = str(payload.get("markdown") or "")
+    if book_id and content_version and markdown:
+        state["book_evidence"] = {
+            "book_id": book_id,
+            "content_version": content_version,
+            "section": str(payload.get("section") or ""),
+        }
+        state["consumed_internal_knowledge"] = True
+        state["internal_context_exposed"] = True
+        state["status"] = "matched"
+        state["failure_kind"] = "none"
+        return
     raw_docs = payload.get("docs") or []
     if not isinstance(raw_docs, list):
         state.update(
@@ -2326,6 +2340,9 @@ def _record_knowledge_gate_tool_result(
 
 def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     status, docs = str(state.get("status") or "error"), list(state.get("docs") or [])
+    book_evidence = state.get("book_evidence")
+    if not isinstance(book_evidence, dict):
+        book_evidence = {}
     requirement = str(state.get("requirement") or "required")
     if requirement not in {"required", "optional"}:
         requirement = "required"
@@ -2356,7 +2373,7 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
     if outside or len(cited) > _KNOWLEDGE_GATE_LIMIT:
         status = "denied"
         failure_kind = "citation_violation"
-    elif status == "matched" and not cited:
+    elif status == "matched" and not cited and not book_evidence:
         status = "insufficient"
     elif cited:
         expected = {path: str(known[path].get("version") or "") for path in cited}
@@ -2388,7 +2405,42 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
         except Exception:
             status = "error"
             failure_kind = "system"
-    internal_passed = bool(status == "matched" and cited and not observation_uncertain)
+    elif book_evidence:
+        try:
+            live_book = _knowledge_gateway_search(
+                token,
+                query="live selected-book authorization barrier",
+                sources=["tenant_knowledge"],
+                include_content=False,
+                book_request={
+                    "book_id": str(book_evidence.get("book_id") or ""),
+                    "content_version": str(book_evidence.get("content_version") or ""),
+                    "operation": "toc",
+                },
+                with_status=True,
+                timeout_seconds=_KNOWLEDGE_GATE_TIMEOUT,
+            )
+            if (
+                not isinstance(live_book, dict)
+                or str(live_book.get("book_id") or "") != str(book_evidence.get("book_id") or "")
+                or str(live_book.get("content_version") or "")
+                != str(book_evidence.get("content_version") or "")
+            ):
+                status = "denied"
+                failure_kind = "version_conflict"
+        except PermissionError:
+            status = "denied"
+            failure_kind = "authorization"
+        except (httpx.TimeoutException, TimeoutError):
+            status = "timeout"
+            failure_kind = "timeout"
+        except Exception:
+            status = "error"
+            failure_kind = "system"
+    book_passed = bool(status == "matched" and book_evidence and not observation_uncertain)
+    internal_passed = bool(
+        status == "matched" and (cited or book_passed) and not observation_uncertain
+    )
     without_internal_passed = bool(
         not required_internal_knowledge
         and not consumed_internal_knowledge
@@ -2397,7 +2449,10 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
         and status in {"no_match", "insufficient", "timeout", "error"}
     )
     passed = internal_passed or without_internal_passed
-    consumption = "cited" if cited else ("unknown" if consumed_internal_knowledge else "not_exposed")
+    consumption = (
+        "selected_book" if book_passed else "cited" if cited
+        else ("unknown" if consumed_internal_knowledge else "not_exposed")
+    )
     decision = (
         "allowed_internal"
         if internal_passed
@@ -2425,15 +2480,23 @@ def _finalize_knowledge_gate(answer: str, token: str, state: dict[str, Any]) -> 
     if not passed:
         return _knowledge_gap_answer(status), receipt
     receipt["semantic"] = (
-        "retrieved_and_cited"
-        if internal_passed
+        "selected_book_retrieved"
+        if book_passed
+        else "retrieved_and_cited" if internal_passed
         else "public_evidence_only" if web_ok else "no_internal_knowledge_consumed"
     )
     receipt["versions"] = {path: str(known[path].get("version") or "") for path in cited}
+    if book_passed:
+        receipt["versions"][f"book:{book_evidence['book_id']}"] = str(
+            book_evidence["content_version"]
+        )
     visible_sources = [
         f"{path}@{receipt['versions'][path]}" if receipt["versions"][path] else path
         for path in cited
-    ] or receipt["web_urls"] or ["未使用受控知识"]
+    ] or (
+        [f"book:{book_evidence['book_id']}@{book_evidence['content_version']}"]
+        if book_passed else []
+    ) or receipt["web_urls"] or ["未使用受控知识"]
     proof_scope = (
         "此回执仅证明受控知识已读取、引用并完成版本复核"
         if internal_passed
