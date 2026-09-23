@@ -1945,6 +1945,33 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
                 "book_id": requested_book_id,
                 "content_version": requested_content_version,
             }
+            authorization_key = (
+                str(trusted_claims.get("tenant_key") or ""),
+                str(trusted_claims.get("user_id") or ""),
+                str(trusted_claims.get("policy_version") or ""),
+                tuple(sorted(str(item) for item in (trusted_claims.get("scopes") or []))),
+                tuple(sorted(str(item) for item in (trusted_claims.get("sources") or []))),
+            )
+            with _knowledge_tool_session_lock:
+                active_contexts = list(_knowledge_tool_context_by_request.values())
+            equivalent_gate_states = []
+            for active_context in active_contexts:
+                if not isinstance(active_context, dict) or not active_context.get("capability"):
+                    continue
+                try:
+                    active_claims = verify_capability(str(active_context["capability"]))
+                except KnowledgeScopeDenied:
+                    continue
+                active_key = (
+                    str(active_claims.get("tenant_key") or ""),
+                    str(active_claims.get("user_id") or ""),
+                    str(active_claims.get("policy_version") or ""),
+                    tuple(sorted(str(item) for item in (active_claims.get("scopes") or []))),
+                    tuple(sorted(str(item) for item in (active_claims.get("sources") or []))),
+                )
+                if active_key == authorization_key and isinstance(active_context.get("gate_state"), dict):
+                    equivalent_gate_states.append(active_context["gate_state"])
+            context["equivalent_gate_states"] = equivalent_gate_states
             trusted_claims = verify_capability(derived_capability)
             trusted_book_scope = trusted_claims.get("book_scope")
         if not trusted_claims.get("user_id"):
