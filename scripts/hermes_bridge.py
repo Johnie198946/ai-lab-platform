@@ -1842,6 +1842,15 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         # selectors, retain the selected-book route instead of widening to Wiki.
         book_request["book_id"] = trusted_book_id
         book_request["content_version"] = trusted_content_version
+        if (
+            str(book_request.get("operation") or "read") == "read"
+            and book_request.get("page") == 1
+            and not context.get("book_read_started")
+        ):
+            # Models often interpret an initial page as human page 1 while the
+            # gateway continuation contract is zero-based. Normalize only the
+            # first read; later page=1 values returned by `next` remain intact.
+            book_request["page"] = 0
     if "tenant_knowledge" not in set(
         context.get("sources") or ["tenant_knowledge"]
     ):
@@ -1908,6 +1917,8 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         payload["detail"] = str(exc)[:160]
         return json.dumps(payload, ensure_ascii=False)
     if book_request:
+        if isinstance(docs, dict) and str(docs.get("markdown") or ""):
+            context["book_read_started"] = True
         return json.dumps(docs, ensure_ascii=False)
     gateway_status = docs.get("retrieval_status") if isinstance(docs, dict) else None
     if isinstance(docs, dict):
