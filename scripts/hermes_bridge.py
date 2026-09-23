@@ -2047,6 +2047,9 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         )
         payload["detail"] = str(exc)[:160]
         return json.dumps(payload, ensure_ascii=False)
+    gate_state = context.get("gate_state")
+    if isinstance(gate_state, dict):
+        _observe_internal_search_result(gate_state, docs)
     if book_request:
         return json.dumps(docs, ensure_ascii=False)
     gateway_status = docs.get("retrieval_status") if isinstance(docs, dict) else None
@@ -8506,6 +8509,7 @@ def _run_agent_sync(
                 (knowledge_claims or {}).get("sources") or ["tenant_knowledge"]
             ),
             "book_scope": dict((knowledge_claims or {}).get("book_scope") or {}),
+            "gate_state": knowledge_gate_state,
         }
         _knowledge_tool_context.value = knowledge_request_context
         with _knowledge_tool_session_lock:
