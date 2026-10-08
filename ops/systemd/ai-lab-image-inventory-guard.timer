@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AI Lab Docker image inventory guard daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
