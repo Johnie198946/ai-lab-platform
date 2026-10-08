@@ -16,9 +16,11 @@ from zoneinfo import ZoneInfo
 
 
 TARGET = "deploy@120.24.248.58"
+CONTAINER_EXEC = (
+    "sudo", "-n", "/usr/local/sbin/ai-lab-publication-exec",
+)
 OPERATOR = (
-    "sudo", "-n", "docker", "compose", "-p", "ai-lab-platform",
-    "-f", "/opt/ai-lab-platform/docker-compose.yml", "exec", "-T", "api",
+    *CONTAINER_EXEC,
     "python", "/app/scripts/publication_operator.py",
     "--root", "/app/data/runtime/publications",
 )

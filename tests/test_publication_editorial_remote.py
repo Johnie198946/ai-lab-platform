@@ -74,14 +74,15 @@ def flow(tmp_path, monkeypatch):
 
     def ssh(identity, hosts, command):
         words = shlex.split(command)
-        assert words[:12] == list(transport.OPERATOR[:12])
-        calls.append(words[12:])
-        if words[12] == "-c":
-            script = words[13].replace(
+        prefix = list(transport.CONTAINER_EXEC)
+        assert words[:len(prefix)] == prefix
+        calls.append(words[len(prefix):])
+        if words[len(prefix):len(prefix) + 2] == ["python", "-c"]:
+            script = words[len(prefix) + 2].replace(
                 "/app/data/runtime/publication-intake", str(intake)
             )
             done = subprocess.run(
-                [sys.executable, "-c", script, *words[14:]],
+                [sys.executable, "-c", script, *words[len(prefix) + 3:]],
                 capture_output=True,
                 text=True,
             )
@@ -89,12 +90,12 @@ def flow(tmp_path, monkeypatch):
                 str(intake), "/app/data/runtime/publication-intake"
             )
             return done
-        assert words[12] == "/app/scripts/publication_operator.py"
+        assert words[len(prefix):len(prefix) + 2] == ["python", "/app/scripts/publication_operator.py"]
         args = [
             a.replace("/app/data/runtime/publication-intake", str(intake)).replace(
                 "/app/data/runtime/publications", str(store)
             )
-            for a in words[13:]
+            for a in words[len(prefix) + 2:]
         ]
         return subprocess.run(
             [sys.executable, "-m", "scripts.publication_operator", *args],

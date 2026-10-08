@@ -228,7 +228,7 @@ class Remote:
             mode, payload = "chunks", json.dumps(chunks)
         else:
             mode, payload = "bytes", base64.b64encode(raw).decode()
-        value = self.call([*transport.OPERATOR[:12], "-c", UPLOAD, batch, digest, ext, mode, payload])
+        value = self.call([*transport.CONTAINER_EXEC, "python", "-c", UPLOAD, batch, digest, ext, mode, payload])
         expected = f"/app/data/runtime/publication-intake/{batch}/{digest}{ext}"
         if value != {"path": expected, "sha256": digest}:
             raise ValueError("upload readback mismatch")
