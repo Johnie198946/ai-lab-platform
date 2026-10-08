@@ -34,7 +34,7 @@ Pre-change inventory:
    - never invokes `docker compose` or the expensive image-list endpoint.
 2. Publication release and editorial upload clients share the new execution prefix.
 3. Hermes memory protection:
-   - Bridge cache 4; `MemoryHigh=1024M`; `MemoryMax=1152M`; `TasksMax=512`.
+   - Bridge cache 4; `MemoryHigh=1152M`; `MemoryMax=1280M`; `TasksMax=512`. The initial 1024/1152-MiB candidate was raised before worker activation after the restarted Bridge reached about 1009 MiB during warm-up.
    - Chat Worker cache 4; `MemoryHigh=700M`; `MemoryMax=800M`; `TasksMax=256`.
    - both use `OOMPolicy=stop`, `Restart=on-failure`, and a five-restart/300-second start limit to prevent an OOM restart storm.
 4. A one-minute resource guard monitors available memory, one-minute load, swap use, Docker `_ping`, and critical units. It emits state-change/recovery events without enumerating Docker images.
