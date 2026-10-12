@@ -1,15 +1,15 @@
 # QuanSyn Desktop manual relay completion
 
 - task_id: `20261012-quansyn-desktop-manual-relay`
-- status: `TESTED`
+- status: `DEPLOYED`
 - branch: `main`
 - worktree: `/var/folders/33/32l9c_4n4c92hwt_tp2x77s80000gn/T/ai-lab-quansyn-richtext.P7G6Rv`
 - head_before: `3306ef9d191ce83926e8608a6ee4d1d82489c057`
-- local_commit: pending
-- remote_sha: pending
+- local_commit: `65b870effb835aff3377c621be15dca0f214c464`; correction `1bd9c7e68e0896e664da90e5106c7f1501ec4415`
+- remote_sha: correction verified at `1bd9c7e68e0896e664da90e5106c7f1501ec4415`
 - server_before: not applicable; target is the owner's local Hermes Desktop
-- server_after: pending local deployment verification
-- rollback_point: GitHub `main` at `3306ef9d191ce83926e8608a6ee4d1d82489c057`; active plugin version `2.2.1`
+- server_after: exact committed files copied into the default profile; source/target SHA-256 pairs match
+- rollback_point: GitHub `main` at `3306ef9d191ce83926e8608a6ee4d1d82489c057`; active plugin version `2.2.1` backup at `~/.hermes/backups/quansyn-desktop-relay-before-65b870e`
 
 ## Scope
 
@@ -38,14 +38,19 @@
 - `python -m py_compile .../plugin_api.py`: passed.
 - Node ESM syntax check for `desktop/plugin.js`: passed.
 - `ruff check plugin_api.py tests/test_quansyn_desktop_relay.py`: passed.
-- Targeted pytest: `5 passed, 4 warnings` (warnings are pre-existing Pydantic class-config deprecations).
+- Targeted pytest: `6 passed` for the Desktop relay suite; the combined Desktop relay + rich-text regression run also passed.
 - `scripts/check_governed_engineering_rules.py`: passed after deterministic PCM regeneration.
 - Plugin Doctor against the staged manifest/API: `2 tools`, `12 hooks`, passed.
 - No live Web request was claimed and no result was externally published during automated tests.
 
 ## Deployment and functional verification
 
-Pending GitHub push. After remote SHA verification, copy the exact committed plugin files into the active default profile, restart Hermes Desktop/serve, verify the plugin API route, button rendering, draft insertion, command interception, and external receipt behavior. A real `/push` or `/copy` publication requires an actual pending Web request and is not to be fabricated.
+- GitHub `main` push and remote SHA verification passed for both the implementation and dashboard-manifest correction.
+- The exact committed plugin files were copied into the active default profile; source/target SHA-256 pairs match.
+- Authenticated plugin rescan discovers `ai-lab-capabilities` with `has_api=true`, version `2.3.0`, and hidden tab metadata.
+- Importing the real `hermes_cli.web_server` against the active profile mounts exactly these routes: `/desktop/pull`, `/desktop/push-copy`, and `/desktop/push-last` under `/api/plugins/ai-lab-capabilities`.
+- The already-running serve process predates the corrected dashboard manifest; rescan does not hot-mount routers, so its authenticated OpenAPI correctly remains without these routes until the next safe Desktop/serve reload. No duplicate restart was issued during continuation.
+- No live Web request was claimed and no result was externally published. A real `/push` or `/copy` publication requires an actual pending Web request and is not to be fabricated.
 
 ## Remaining risks
 
