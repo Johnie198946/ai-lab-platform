@@ -96,6 +96,32 @@ Bridge 消费裁决合同：
 - 当前普通知识预读取目标为 P95 不超过 3 秒，任何单次不得超过 5 秒发送门禁；未达到目标应优化重复工作，不得仅放宽安全超时。
 - 性能优化不得删除请求开始、Gateway 返回前、Hermes 发送前这三道独立复核，也不得引入跨请求授权缓存。
 
+#### 2.3 QuanSyn Desktop 人工中转合同
+
+QuanSyn Desktop 的手工模式是 Web 与当前 Hermes Desktop 会话之间的受控 transport adapter，不创建第二套对话 Runtime，也不把 Web request 当作 Hermes 上下文真相源。标准链路为：
+
+```text
+Web request
+-> 用户点击“拉取到输入框”
+-> 当前 Desktop composer 预填但不发送
+-> 用户检查并在当前 Hermes session 发送
+-> Hermes 使用该 session 的既有历史回答
+-> 用户以 /push 显式发布最后一条已完成 assistant 消息
+```
+
+另提供 `/copy`：命令可位于正文开头或最后一行，adapter 只发布去除命令后的当前 composer 正文，不触发 Hermes 模型执行。
+
+合同约束：
+
+- 上下文只来自当前 Hermes session；Web 不提供、伪造或恢复 Hermes conversation ID。进入新 session、错误 session 或未恢复的 session 时，不得宣称继承了旧上下文。
+- “拉取到输入框”只做 claim/download 和 composer 预填，禁止自动发送、自动执行模型或自动外发结果。
+- Desktop 只保留最小活动关联 `transfer_id + session_id + pulled_at`。有未完成活动请求时不得静默覆盖；session 不匹配、活动目标缺失或目标不唯一时，`/push`、`/copy` 必须 fail closed。
+- `/push` 只读取当前 session 最近一条非隐藏、非空、已持久化的 assistant 消息；不得读取 tool/system/error、其他 session 或流式中间片段。
+- `/copy` 的正文必须与命令同处一个 composer draft；仅输入 `/copy` 时拒绝发布，不能从历史消息猜测正文。
+- owner/principal 只能由本机可信环境解析；Desktop 不得提交或覆盖身份。远端 token 只从 macOS Keychain 读取，不进入模型输入、代码、日志或 receipt。
+- 发布必须携带稳定 idempotency key 和 `reply_to=transfer_id`，并保留完整纯文本 `result/text` 与完整 Markdown block；HTTP 2xx 之后仍需返回远端结果 ID 才能显示成功。
+- 旧自动 pull/execute/push 入口继续保留，手工模式作为显式 Desktop adapter，不得改变旧入口的契约或自动触发它。
+
 ### 3. 统一调用模型
 
 所有 adapter 必须归一化为同一个逻辑调用：

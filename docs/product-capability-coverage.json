@@ -605,6 +605,1367 @@
     "features": [
       {
         "automated_tests": [
+          "tests/test_bookshelf_capabilities.py",
+          "ios/AIPlatformAppTests/WorkflowLifecycleDTOTests.swift"
+        ],
+        "capability": "bookshelf.search",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "bookshelf.results@1",
+        "handler": "bookshelf.search",
+        "ios_user_function": "Search the authenticated reader's currently authorized bookshelf.",
+        "policy": "bookshelf-reader",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/bookshelf.search",
+            "event": "bookshelf.results",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "bookshelf",
+            "renderer_version": 1,
+            "response_sha256": "102f034afb2c3a147f5b5b389eac3fee5b9460a721cabca9b1017079586b3188",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "bookshelf@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_bookshelf_capabilities.py"
+        ],
+        "capability": "bookshelf.subscribe",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "bookshelf.subscription_changed@1",
+        "handler": "bookshelf.subscribe",
+        "ios_user_function": "Subscribe to or unsubscribe from one currently authorized book.",
+        "policy": "bookshelf-reader",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/bookshelf.subscribe",
+            "event": "bookshelf.subscription_changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "bookshelf",
+            "renderer_version": 1,
+            "response_sha256": "51295117e28a96b282175487318948dfc6b59b16ca66d05378c780d9df2d0e61",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "bookshelf@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_bookshelf_capabilities.py",
+          "ios/AIPlatformAppUITests/ProductionBookshelfUITests.swift"
+        ],
+        "capability": "bookshelf.open",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "bookshelf.opened@1",
+        "handler": "bookshelf.open",
+        "ios_user_function": "Open one currently authorized book at its current immutable content version.",
+        "policy": "bookshelf-reader",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/bookshelf.open",
+            "event": "bookshelf.opened",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "bookshelf",
+            "renderer_version": 1,
+            "response_sha256": "769201f006256ed2238cbe9f0e28fb76a4f2a146b6d96fa80c3775c4965956d8",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "bookshelf@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_agent_capabilities.py"
+        ],
+        "capability": "agent.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "agent.snapshot@1",
+        "handler": "agent.list",
+        "ios_user_function": "List tenant-visible agents.",
+        "policy": "agent-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/agent.list",
+            "event": "agent.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "d0bc2ebc94569b5c5f243dffd81a12efdb741b4cc8deaf9ad08dfb4618383023",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_agent_capabilities.py"
+        ],
+        "capability": "agent.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "agent.changed@1",
+        "handler": "agent.create",
+        "ios_user_function": "Create an owned tenant agent.",
+        "policy": "agent-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/agent.create",
+            "event": "agent.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "c20a9fea0d8526d12692aceb04d80ccf8c0999e6337bbf2a2dc59f3896ed8218",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_agent_capabilities.py"
+        ],
+        "capability": "agent.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "agent.changed@1",
+        "handler": "agent.update",
+        "ios_user_function": "Update an owned tenant agent.",
+        "policy": "agent-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/agent.update",
+            "event": "agent.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "a70e9a083ccccb0a4e35e9f087b6228130a00a1dd7af1abb62b095ae6cec8e3b",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_agent_capabilities.py"
+        ],
+        "capability": "agent.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "agent.changed@1",
+        "handler": "agent.delete",
+        "ios_user_function": "Delete an owned tenant agent.",
+        "policy": "agent-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/agent.delete",
+            "event": "agent.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "aac7e4ba67f1858000881910b873871d3b5b83873dfef3dc3397facf6d3be627",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_agent_capabilities.py"
+        ],
+        "capability": "agent.evaluate",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "agent.changed@1",
+        "handler": "agent.evaluate",
+        "ios_user_function": "Start an agent evaluation.",
+        "policy": "agent-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/agent.evaluate",
+            "event": "agent.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "3b88b3faadd6c270c86c2c3fc5fa3e8954d0eb7aaac5c5ccc4f091e3b69af352",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_skill_capabilities.py"
+        ],
+        "capability": "skill.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "skill.snapshot@1",
+        "handler": "skill.list",
+        "ios_user_function": "List Skills visible in the authenticated tenant/user Hermes sandbox.",
+        "policy": "tenant-skill-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/skill.list",
+            "event": "skill.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "0bd1ee57de79342fdddbdebc124c2c0b969526e560c35d85db026e464538f6ec",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_skill_capabilities.py"
+        ],
+        "capability": "skill.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "skill.changed@1",
+        "handler": "skill.create",
+        "ios_user_function": "Create one governed Skill in the authenticated tenant/user Hermes sandbox.",
+        "policy": "tenant-skill-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/skill.create",
+            "event": "skill.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "9fc54749202bd272414fc8656bcb9384fb681a80e1f7b0f2dede829c98f9d7db",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_skill_capabilities.py"
+        ],
+        "capability": "skill.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "skill.changed@1",
+        "handler": "skill.update",
+        "ios_user_function": "Replace one owned governed Skill in the authenticated tenant/user Hermes sandbox.",
+        "policy": "tenant-skill-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/skill.update",
+            "event": "skill.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "c19c3831a3bf51a1ea89a654347a962ef90f96e7038a07a05e8ed310aeedbb9a",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_skill_capabilities.py"
+        ],
+        "capability": "skill.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "skill.changed@1",
+        "handler": "skill.delete",
+        "ios_user_function": "Delete one owned custom Skill from the authenticated tenant/user Hermes sandbox.",
+        "policy": "tenant-skill-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/skill.delete",
+            "event": "skill.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "8ff496c3bf868f5e32e516274315167ad7d9f997f963ce517b18cf3cc80efb51",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_memory_capabilities.py"
+        ],
+        "capability": "memory.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "memory.snapshot@1",
+        "handler": "memory.list",
+        "ios_user_function": "List native Hermes memory visible to the authenticated user.",
+        "policy": "native-memory-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/memory.list",
+            "event": "memory.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "b2c72cab0aafeacee0b8fd479bc628348694d3696a589e56f86e4b8f3928e2f2",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_memory_capabilities.py"
+        ],
+        "capability": "memory.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "memory.changed@1",
+        "handler": "memory.create",
+        "ios_user_function": "Add one bounded native Hermes memory entry after confirmation.",
+        "policy": "native-memory-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/memory.create",
+            "event": "memory.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "3ddf799c8d6093dae37e4e656f89398280ac9dd5d9e1888dea70a52857c815e0",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_memory_capabilities.py"
+        ],
+        "capability": "memory.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "memory.changed@1",
+        "handler": "memory.update",
+        "ios_user_function": "Replace one owned native Hermes memory entry after confirmation.",
+        "policy": "native-memory-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/memory.update",
+            "event": "memory.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "1446b60a7713d09b69feec69c9066e2e93cb8e0f33cf4e097bf0aae9378516e4",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_memory_capabilities.py"
+        ],
+        "capability": "memory.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "memory.changed@1",
+        "handler": "memory.delete",
+        "ios_user_function": "Delete one owned native Hermes memory entry after confirmation.",
+        "policy": "native-memory-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/memory.delete",
+            "event": "memory.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "e11af12ce4a8a6c97577dcf7f72b4890f5234ce16a3afa16f95ec0b985e6bb11",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "knowledge.note.search",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.results@1",
+        "handler": "knowledge.search",
+        "ios_user_function": "Search the authenticated user's active or archived notes.",
+        "policy": "personal-knowledge-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.search",
+            "event": "knowledge.results",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "fcb0ea6d64e0dd1d157610ae292885e91804eed0a151178dfa93027aa629e0f7",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "knowledge.note.read",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.note@1",
+        "handler": "knowledge.read",
+        "ios_user_function": "Read one authenticated user's note by stable note id.",
+        "policy": "personal-knowledge-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.read",
+            "event": "knowledge.note",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "a9ec256fda2df8033492dcc3e83979d0542a28f2645caf031da8ba68903c5c0e",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "knowledge.note.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.action@1",
+        "handler": "knowledge.create",
+        "ios_user_function": "Create a stable personal Markdown note after confirmation.",
+        "policy": "personal-knowledge-confirmed-mutation",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.create",
+            "event": "knowledge.action",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "knowledge_action",
+            "renderer_version": 1,
+            "response_sha256": "a404c023c9683ce6fb6609c8733603dc3e4d17714929cb5c3fda2c61405f8360",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "knowledge_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py",
+          "ios/AIPlatformAppTests/KnowledgeNoteStoreTests.swift"
+        ],
+        "capability": "knowledge.note.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.action@1",
+        "handler": "knowledge.update",
+        "ios_user_function": "Replace a note with complete Markdown using compare-and-set.",
+        "policy": "personal-knowledge-confirmed-mutation",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.update",
+            "event": "knowledge.action",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "knowledge_action",
+            "renderer_version": 1,
+            "response_sha256": "89a0664804f033de6e7ba1207a6ec2bc50f36313e4d7ad097b951157c41a521b",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "knowledge_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py",
+          "ios/AIPlatformAppTests/KnowledgeNoteStoreTests.swift"
+        ],
+        "capability": "knowledge.note.merge",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.action@1",
+        "handler": "knowledge.merge",
+        "ios_user_function": "CAS-update a target and archive only explicit merge sources.",
+        "policy": "personal-knowledge-confirmed-mutation",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.merge",
+            "event": "knowledge.action",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "knowledge_action",
+            "renderer_version": 1,
+            "response_sha256": "abc7011c666ee3278fc047417c2714dbe8d96ecd8dabae78418a4032d5ece3e4",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "knowledge_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py",
+          "ios/AIPlatformAppTests/KnowledgeNoteStoreTests.swift"
+        ],
+        "capability": "knowledge.note.archive",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.action@1",
+        "handler": "knowledge.archive",
+        "ios_user_function": "Ordinarily archive one note without inventing a merge target.",
+        "policy": "personal-knowledge-confirmed-mutation",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.archive",
+            "event": "knowledge.action",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "knowledge_action",
+            "renderer_version": 1,
+            "response_sha256": "30bc1490c75dc0987447cf17e09a3cf6e3fdc72df6d51ce82c55eca271222a00",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "knowledge_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "knowledge.note.restore",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "knowledge.action@1",
+        "handler": "knowledge.restore",
+        "ios_user_function": "Restore one ordinarily archived personal note.",
+        "policy": "personal-knowledge-confirmed-mutation",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/knowledge.note.restore",
+            "event": "knowledge.action",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "knowledge_action",
+            "renderer_version": 1,
+            "response_sha256": "889fc0b2d79206ff4dd8e0e6f7126723aa05aafca31fbae2a223225107b9a236",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "knowledge_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "workflow.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.created@1",
+        "handler": "workflow.create",
+        "ios_user_function": "Create a real workflow draft through the existing workflow handler.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.create",
+            "event": "workflow.created",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "62ceaa729c2c2a0ce54c2b89e8bb0d3a364dc44b685dabc4d803416b075f70f9",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "workflow.open",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.summary@1",
+        "handler": "workflow.open",
+        "ios_user_function": "Open an owned workflow summary.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.open",
+            "event": "workflow.summary",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "d13e47c7c4295df5f7793c0c741f3821b42453dca2c6081c863f11dc6c6786cf",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "workflow.status",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.summary@1",
+        "handler": "workflow.status",
+        "ios_user_function": "Read an owned workflow execution status.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.status",
+            "event": "workflow.summary",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "5f79cfdd522ad134b751200143ab92a5aef185472e7e7497933332b68e927205",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py"
+        ],
+        "capability": "workflow.start",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.started@1",
+        "handler": "workflow.start",
+        "ios_user_function": "Start an approved workflow through its existing lifecycle handler.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.start",
+            "event": "workflow.started",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "31f1a73742b4a4fb68ef75cb55139969c332f98cc445acb3ac9cda958a16e8cc",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_workflow_capabilities.py",
+          "tests/test_workflows_api.py"
+        ],
+        "capability": "workflow.approve",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.approved@1",
+        "handler": "workflow.approve",
+        "ios_user_function": "Approve the exact current workflow plan through the existing lifecycle handler.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.approve",
+            "event": "workflow.approved",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "8bd294bd5e7c13cbf3000e6698d88c1ff843eeb6a9f2cca0aa6a23e5f604e502",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_workflow_capabilities.py",
+          "tests/test_workflows_api.py"
+        ],
+        "capability": "workflow.revise",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.revised@1",
+        "handler": "workflow.revise",
+        "ios_user_function": "Save a CAS-bound workflow plan revision through the existing versioned plan editor.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.revise",
+            "event": "workflow.revised",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "28de9f046eb2cc6f7ce289809654f079e9c3891b9ceedeacea607084394b8205",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_workflow_capabilities.py",
+          "tests/test_workflows_api.py"
+        ],
+        "capability": "workflow.cancel",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "workflow.cancelled@1",
+        "handler": "workflow.cancel",
+        "ios_user_function": "Cancel and archive an owned workflow with timestamp CAS and a durable domain receipt.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/workflow.cancel",
+            "event": "workflow.cancelled",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "workflow",
+            "renderer_version": 1,
+            "response_sha256": "1c66a9700873edd9928a1ad72aa49f40ee3806373dfee43b24bf39a03aaacc5c",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "workflow@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "project.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "project.snapshot@1",
+        "handler": "project.list",
+        "ios_user_function": "List projects visible to the authenticated tenant member.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/project.list",
+            "event": "project.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "cf715740ae34d224111b6a239de95539ada276af6de130619a29adb54324bb17",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "project.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "project.created@1",
+        "handler": "project.create",
+        "ios_user_function": "Create an owned QWS project from the canonical IPD template.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/project.create",
+            "event": "project.created",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "f7a5e66752272f1412f1b6f502f1c977169b51322df26c6277a917517c52d9a6",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "project.open",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "project.snapshot@1",
+        "handler": "project.open",
+        "ios_user_function": "Open a tenant-visible QWS project snapshot.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/project.open",
+            "event": "project.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "d5377adff8e75a86fda37c60b200c099d0ffceff854ff078348d94f796be202e",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "project.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "project.change_proposed@1",
+        "handler": "project.update",
+        "ios_user_function": "Propose definition changes to an owned QWS project using revision CAS.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/project.update",
+            "event": "project.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "9169b8359331e13ecce63d1510104115cb2b39d482f2db0309205a9eb5847212",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "project.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "project.change_proposed@1",
+        "handler": "project.delete",
+        "ios_user_function": "Archive an owned QWS project while preserving immutable audit history.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/project.delete",
+            "event": "project.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "b8c066fb10c0ca33c388213f2fdc62ef6b0c30bb3b33f955e85567d426c2f089",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "task.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "task.snapshot@1",
+        "handler": "task.list",
+        "ios_user_function": "List canonical tasks in a tenant-visible QWS project.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/task.list",
+            "event": "task.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "c2d550fc4103fc60d1a242aff80ce3125ecb1a033c4b3f0eb8d6da5d671314de",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "task.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "task.change_proposed@1",
+        "handler": "task.create",
+        "ios_user_function": "Propose a new canonical task in an owned QWS project.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/task.create",
+            "event": "task.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "aa92c184a3de7430f443a38fe3cfbb4936158299af7f59ac813ae01d50b5b29f",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "task.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "task.change_proposed@1",
+        "handler": "task.update",
+        "ios_user_function": "Propose edits to a canonical QWS task contract.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/task.update",
+            "event": "task.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "5d83edb6c41468bc5b60597200158fb1a0a0f02f3a5cff26473593727c153cd5",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "task.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "task.change_proposed@1",
+        "handler": "task.delete",
+        "ios_user_function": "Soft-delete a canonical QWS task through the governed archive proposal path.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/task.delete",
+            "event": "task.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "f171ac50561634aa06ac8ead4068d740188daa19014ba96917158b7b8d45e423",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_task_execute_capability.py"
+        ],
+        "capability": "task.execute",
+        "consumer": "ios/AIPlatformApp/Networking/APIClient.swift:RendererRegistry",
+        "event": "task.execution_queued@1",
+        "handler": "task.execute",
+        "ios_user_function": "Queue an owner-bound QWS task conversation using an ephemeral delegated user token.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/task.execute",
+            "event": "task.execution_queued",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "task_execution_card",
+            "renderer_version": 1,
+            "response_sha256": "edca94055e004141152695756591f535e3594e43cbf144dfd6f13c0d13212907",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "task_execution_card@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_project_task_capabilities.py"
+        ],
+        "capability": "task.status",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "task.snapshot@1",
+        "handler": "task.status",
+        "ios_user_function": "Read a canonical QWS task and its current status.",
+        "policy": "qws-project-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/task.status",
+            "event": "task.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "b5bdb417f5e619a11fa8ad98753be7dfc78279b68423b989f7301b6e2a9d004d",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
           "tests/e2e/test_word_workflow.py",
           "tests/test_product_capabilities.py",
           "ios/AIPlatformAppTests/WorkflowLifecycleDTOTests.swift"
@@ -617,11 +1978,53 @@
         "local_evidence": "multi-page DOCX, two content edits, versioned re-render, repeated authenticated download, SHA-256 equality",
         "policy": "workflow-owner + artifact-owner",
         "production_receipt": {
-          "evidence": null,
-          "status": "unverified"
+          "evidence": {
+            "artifact_workflow": {
+              "artifact_id": "wfa_a94d98b8db434d18aa275f4f82e8b387",
+              "artifact_version": 2,
+              "capability_id": "document.word.create_from_text",
+              "content_sha256": "89d0ccbb1fbee049df63024275387bd29c7d8fe9336883cdff4e2f9f6d025b58",
+              "download_bytes": 3051,
+              "download_repeat_equal": true,
+              "download_sha256": "89d0ccbb1fbee049df63024275387bd29c7d8fe9336883cdff4e2f9f6d025b58",
+              "execution_id": "wfr_057a224221bd4e5a89aed25ae93d5a65",
+              "execution_status": "completed",
+              "extension": "docx",
+              "generation": 2,
+              "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "model_used": "gpt-5.6-sol",
+              "owner_id": "gate06-prod-owner-ea8cd65c63e4",
+              "production_release_switched_at": "2026-09-19T03:13:16+08:00",
+              "production_sha": "6b461bb49f8ed05e7ba34fc99f44503ebca1cc57",
+              "provider_used": "openai-codex",
+              "receipt_corrected_reason": "Artifact workflows executed after the verified 6b461bb production release switch; the earlier target SHA label was stale metadata.",
+              "source_client_session_id": "gate06-prod-session-ea8cd65c63e4",
+              "token_used": 22145,
+              "workflow_id": "wf_57adfc9f2c2e9ac7d0d70ca8f65e7378"
+            },
+            "artifact_workflow_receipt": "ops/acceptance/receipts/20260919-production-word-artifact.json",
+            "artifact_workflow_receipt_sha256": "6881aa74d8ad7d192edf6ccb8a8849dc1d0ae782f586204c942bc77360976229",
+            "authenticated_describe": {
+              "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+              "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+              "captured_at": "2026-09-18T19:09:17.235101+00:00",
+              "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+              "endpoint": "/api/v1/capabilities/document.word.create_from_text",
+              "event": "document.created",
+              "http_status": 200,
+              "implementation_status": "implemented",
+              "kind": "authenticated_describe",
+              "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+              "renderer": "workflow",
+              "renderer_version": 1,
+              "response_sha256": "c0874f325684def8b03edb7a0a8a969d0785231aeab54bb91a58c9c2db30d9aa",
+              "version": "1.0.0"
+            }
+          },
+          "status": "implemented"
         },
         "renderer": "workflow@1",
-        "status": "partial"
+        "status": "implemented"
       },
       {
         "automated_tests": [
@@ -637,11 +2040,53 @@
         "local_evidence": "three independently published accessible sources, exact citation/source correspondence, revision and redownload hashes",
         "policy": "workflow-owner + artifact-owner",
         "production_receipt": {
-          "evidence": null,
-          "status": "unverified"
+          "evidence": {
+            "artifact_workflow": {
+              "artifact_id": "wfa_2ab4a7808c7849b4bc7ff69f0a310f78",
+              "artifact_version": 2,
+              "capability_id": "report.research.create_from_text",
+              "content_sha256": "62af3a04469ad3a8033649349b5cd14db66e6e91d063e592d2f97f179ff8ed68",
+              "download_bytes": 6062,
+              "download_repeat_equal": true,
+              "download_sha256": "62af3a04469ad3a8033649349b5cd14db66e6e91d063e592d2f97f179ff8ed68",
+              "execution_id": "wfr_f55277dde0c44d1bbd423b9463d27297",
+              "execution_status": "completed",
+              "extension": "docx",
+              "generation": 2,
+              "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "model_used": "gpt-5.6-sol",
+              "owner_id": "gate06-prod-owner-ea8cd65c63e4",
+              "production_release_switched_at": "2026-09-19T03:13:16+08:00",
+              "production_sha": "6b461bb49f8ed05e7ba34fc99f44503ebca1cc57",
+              "provider_used": "openai-codex",
+              "receipt_corrected_reason": "Artifact workflows executed after the verified 6b461bb production release switch; the earlier target SHA label was stale metadata.",
+              "source_client_session_id": "gate06-prod-session-ea8cd65c63e4",
+              "token_used": 42074,
+              "workflow_id": "wf_36908936b671ff84067acf92de4f9773"
+            },
+            "artifact_workflow_receipt": "ops/acceptance/receipts/20260919-production-research-report-artifact.json",
+            "artifact_workflow_receipt_sha256": "1ad90ad307cfb62f6f40f7a99efa122c9f7ae4d092a90ab985e06eb06d79e9ae",
+            "authenticated_describe": {
+              "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+              "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+              "captured_at": "2026-09-18T19:09:17.235101+00:00",
+              "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+              "endpoint": "/api/v1/capabilities/report.research.create_from_text",
+              "event": "document.created",
+              "http_status": 200,
+              "implementation_status": "implemented",
+              "kind": "authenticated_describe",
+              "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+              "renderer": "workflow",
+              "renderer_version": 1,
+              "response_sha256": "e23f143b563083d6f03d25b50c34d74b318f891a1d757d25b6ab75cae7b85664",
+              "version": "1.0.0"
+            }
+          },
+          "status": "implemented"
         },
         "renderer": "workflow@1",
-        "status": "partial"
+        "status": "implemented"
       },
       {
         "automated_tests": [
@@ -657,11 +2102,914 @@
         "local_evidence": "abstract/body/references sections, exhaustive in-text/reference mapping, allowlisted verified source fixture, DOCX hash and redownload",
         "policy": "workflow-owner + artifact-owner",
         "production_receipt": {
-          "evidence": null,
-          "status": "unverified"
+          "evidence": {
+            "artifact_workflow": {
+              "artifact_id": "wfa_e240c5eaa967461f8f2e5d60d72f1429",
+              "artifact_version": 2,
+              "capability_id": "paper.academic.create_from_text",
+              "content_sha256": "99aa03b90eaef877d3f3f82a7aa5613b8050e047052805547dee3ef68dd9ad65",
+              "download_bytes": 7101,
+              "download_repeat_equal": true,
+              "download_sha256": "99aa03b90eaef877d3f3f82a7aa5613b8050e047052805547dee3ef68dd9ad65",
+              "execution_id": "wfr_ddb601021c5048b4b72391491ae7e3b8",
+              "execution_status": "completed",
+              "extension": "docx",
+              "generation": 2,
+              "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "model_used": "gpt-5.6-sol",
+              "owner_id": "gate06-prod-owner-ea8cd65c63e4",
+              "production_release_switched_at": "2026-09-19T03:13:16+08:00",
+              "production_sha": "6b461bb49f8ed05e7ba34fc99f44503ebca1cc57",
+              "provider_used": "openai-codex",
+              "receipt_corrected_reason": "Artifact workflows executed after the verified 6b461bb production release switch; the earlier target SHA label was stale metadata.",
+              "source_client_session_id": "8C6E33F5-8F2A-41A5-B507-10AD47AAA82D",
+              "structured_review_version": 2,
+              "token_used": 29144,
+              "workflow_id": "wf_1492fd0299d3f51c1e274419cad82340"
+            },
+            "artifact_workflow_receipt": "ops/acceptance/receipts/20260919-production-academic-paper-artifact.json",
+            "artifact_workflow_receipt_sha256": "ad2f1ee12108d2c7073d0420e6facca37a5818917fce948554e64a915bbcc607",
+            "authenticated_describe": {
+              "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+              "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+              "captured_at": "2026-09-18T19:09:17.235101+00:00",
+              "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+              "endpoint": "/api/v1/capabilities/paper.academic.create_from_text",
+              "event": "document.created",
+              "http_status": 200,
+              "implementation_status": "implemented",
+              "kind": "authenticated_describe",
+              "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+              "renderer": "workflow",
+              "renderer_version": 1,
+              "response_sha256": "bd52c4657d9ad066e5ead85d09bd37d87e5e407e11b4392ad5bbe3d22f34278c",
+              "version": "1.0.0"
+            }
+          },
+          "status": "implemented"
         },
         "renderer": "workflow@1",
-        "status": "partial"
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_product_capabilities.py",
+          "tests/test_document_presentation.py"
+        ],
+        "capability": "presentation.create_from_text",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "presentation.created@1",
+        "handler": "presentation.create_from_text",
+        "ios_user_function": "Create an editable PPTX workflow directly from user-provided text, using governed defaults and returning the workflow that will expose its rendered preview and authenticated download.",
+        "policy": "workflow-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/presentation.create_from_text",
+            "event": "presentation.created",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "presentation_review",
+            "renderer_version": 1,
+            "response_sha256": "cc10c28228ac885dd6c64d24aba92d22e7ef84d093a7295a93d6f7da03bb1285",
+            "version": "1.1.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "presentation_review@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_generated_artifact_capabilities.py"
+        ],
+        "capability": "office.spreadsheet.create",
+        "consumer": "ios/AIPlatformApp/Networking/APIClient.swift:RendererRegistry",
+        "event": "artifact.generated@1",
+        "handler": "office.spreadsheet.create",
+        "ios_user_function": "Create an immutable XLSX artifact from bounded columns and rows.",
+        "policy": "generated-artifact-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/office.spreadsheet.create",
+            "event": "artifact.generated",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "artifact_card",
+            "renderer_version": 1,
+            "response_sha256": "9b5436507409ab0f8e775aebf88f2c87dd2076154a621ad99a377e199dc33567",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "artifact_card@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_generated_artifact_capabilities.py"
+        ],
+        "capability": "office.pdf.create",
+        "consumer": "ios/AIPlatformApp/Networking/APIClient.swift:RendererRegistry",
+        "event": "artifact.generated@1",
+        "handler": "office.pdf.create",
+        "ios_user_function": "Create an immutable PDF artifact from bounded text content.",
+        "policy": "generated-artifact-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/office.pdf.create",
+            "event": "artifact.generated",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "artifact_card",
+            "renderer_version": 1,
+            "response_sha256": "e03707dfb595f6c1d29a80f893d87e15e82e3fef8d7fa85041fca429bd4a035c",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "artifact_card@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_generated_artifact_capabilities.py"
+        ],
+        "capability": "data.analyze",
+        "consumer": "ios/AIPlatformApp/Networking/APIClient.swift:RendererRegistry",
+        "event": "artifact.generated@1",
+        "handler": "data.analyze",
+        "ios_user_function": "Compute deterministic bounded column statistics and persist a JSON analysis artifact.",
+        "policy": "generated-artifact-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/data.analyze",
+            "event": "artifact.generated",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "data_analysis_card",
+            "renderer_version": 1,
+            "response_sha256": "40e016dce442499442c15f2114b46f3b021af1a32d47c1ccb9f3148987752131",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "data_analysis_card@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_generated_artifact_capabilities.py"
+        ],
+        "capability": "media.create",
+        "consumer": "ios/AIPlatformApp/Networking/APIClient.swift:RendererRegistry",
+        "event": "artifact.generated@1",
+        "handler": "media.create",
+        "ios_user_function": "Create a deterministic PNG media card from a bounded prompt and dimensions.",
+        "policy": "generated-artifact-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/media.create",
+            "event": "artifact.generated",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "image_card",
+            "renderer_version": 1,
+            "response_sha256": "ed7fcbcc57d387b3fff36b0f6e21ac1e74f06e14e52aa805442cf4105c7b06ee",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "image_card@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_hermes_session_capabilities.py"
+        ],
+        "capability": "hermes.session.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "hermes.session.listed@1",
+        "handler": "hermes.session.list",
+        "ios_user_function": "List the current owner-bound Hermes session for a registered client chat session.",
+        "policy": "hermes-session-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/hermes.session.list",
+            "event": "hermes.session.listed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "hermes_session_list",
+            "renderer_version": 1,
+            "response_sha256": "d9b82a04f072491e03a9dec4a19ee5d0e24dabec9b38b12c16ee7fbb19faba10",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "hermes_session_list@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_hermes_session_capabilities.py"
+        ],
+        "capability": "hermes.session.open",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "hermes.session.opened@1",
+        "handler": "hermes.session.open",
+        "ios_user_function": "Resolve metadata for the owner-bound Hermes session behind a registered client chat session.",
+        "policy": "hermes-session-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/hermes.session.open",
+            "event": "hermes.session.opened",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "hermes_session_detail",
+            "renderer_version": 1,
+            "response_sha256": "b0bfcd2356f5e6ad404e57c0a4e6873ae8042328c03f04fde22a8339d54a2e3c",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "hermes_session_detail@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_hermes_session_capabilities.py"
+        ],
+        "capability": "hermes.session.resume",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "hermes.session.resumed@1",
+        "handler": "hermes.session.resume",
+        "ios_user_function": "Resume the owner-bound Hermes session behind a registered client chat session.",
+        "policy": "hermes-session-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/hermes.session.resume",
+            "event": "hermes.session.resumed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "hermes_session_detail",
+            "renderer_version": 1,
+            "response_sha256": "2b47b14d3c4de5c21dde54e51220480f8ce262bb6d80f86746f8bd1fee8dc90b",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "hermes_session_detail@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_hermes_session_capabilities.py"
+        ],
+        "capability": "hermes.session.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "hermes.session.deleted@1",
+        "handler": "hermes.session.delete",
+        "ios_user_function": "Permanently delete the owner-bound Hermes session and its messages.",
+        "policy": "hermes-session-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/hermes.session.delete",
+            "event": "hermes.session.deleted",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "hermes_session_detail",
+            "renderer_version": 1,
+            "response_sha256": "0e672a756bd4bb6987811c03ef1596911b5c4bde7a99b9bb27fe17bdb5c0e9e6",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "hermes_session_detail@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "file.pick",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "file.pick",
+        "ios_user_function": "Ask the authenticated iOS client to present the native document picker.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/file.pick",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "6ed044e615e281dd08ef10602f2781d05ad7629d162db48922eb26bdf9edd1ee",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "file.upload",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "file.upload",
+        "ios_user_function": "Pick and upload a private document through the authenticated owner-bound document API.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/file.upload",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "29fa8fb97873db2051f9ee440ef17345edc7303d46f5debc91ebea81f6fc9d0d",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "file.download",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "file.download",
+        "ios_user_function": "Download an owner-bound private document by source ID on the authenticated iOS client.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/file.download",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "fe5aa2aaeccbff1eb855cd272a73ce6a8960045e5c1939df0e5c9e37b54f4558",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "photo.capture",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "photo.capture",
+        "ios_user_function": "Ask the authenticated iOS client to present the camera and return a client receipt.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/photo.capture",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "54b83f7a5b49b35d957674455a8348ac8057aca26c692b9ec82d51799c6c9106",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "photo.import",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "photo.import",
+        "ios_user_function": "Ask the authenticated iOS client to present the photo library picker.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/photo.import",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "66a7f72b4babc919589bd7643b27d611077fa98706e2081199d6425da4d08b0c",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "voice.record",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "voice.record",
+        "ios_user_function": "Ask the authenticated iOS client to present the native voice recorder.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/voice.record",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "dace2f71c0b0ade8d7bf956a51856a8d0f2682d28c3522e2205d0b8ddcf4be69",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py",
+          "tests/test_voice_transcription_capability.py"
+        ],
+        "capability": "voice.transcribe",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "voice.transcribe",
+        "ios_user_function": "Record audio on iOS and transcribe it through the authenticated fail-closed speech API.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/voice.transcribe",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "671bbb8acb5a7ff6da85fa4074375e975531f303325ad9aa9961a45efbab8153",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_client_action_capabilities.py"
+        ],
+        "capability": "share.present",
+        "consumer": "ios/AIPlatformApp/Views/Chat/NativeClientActionHost.swift:NativeClientActionRegistry",
+        "event": "client.action.requested@1",
+        "handler": "share.present",
+        "ios_user_function": "Ask the authenticated iOS client to present the native share sheet for supplied text or an owned artifact.",
+        "policy": "client-action-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/share.present",
+            "event": "client.action.requested",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "client_action",
+            "renderer_version": 1,
+            "response_sha256": "da328210093ec1d09a7de89788f1b0d44628bbb57f0f5e8669a27c1d963bbaf1",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "client_action@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_profile_capabilities.py"
+        ],
+        "capability": "profile.read",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "profile.snapshot@1",
+        "handler": "profile.read",
+        "ios_user_function": "Read the authenticated user's current profile and tenant projection.",
+        "policy": "profile-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/profile.read",
+            "event": "profile.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "76d9ab75ef5bc20fa5e402e6559237b6617bcc214fa3426934ec0467dc80944c",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_profile_capabilities.py"
+        ],
+        "capability": "profile.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "profile.changed@1",
+        "handler": "profile.update",
+        "ios_user_function": "Update the authenticated user's display name or avatar after confirmation.",
+        "policy": "profile-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/profile.update",
+            "event": "profile.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "3e1fba74120a74049e255057b8a73db1fe22ef99d6a1682baba9bac155cd6c03",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_notification_capabilities.py"
+        ],
+        "capability": "notification.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "notification.snapshot@1",
+        "handler": "notification.list",
+        "ios_user_function": "Read notifications owned by the authenticated tenant user.",
+        "policy": "notification-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/notification.list",
+            "event": "notification.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "64335fda87bbe515ee4e9b578bdd3a85cc87d173e800b61b35a988141637e68e",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_notification_capabilities.py"
+        ],
+        "capability": "notification.mark_read",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "notification.changed@1",
+        "handler": "notification.mark_read",
+        "ios_user_function": "Mark one notification owned by the authenticated user as read with unread-state CAS.",
+        "policy": "notification-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/notification.mark_read",
+            "event": "notification.changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "21f6b4b90dd26d7b6e1ebd2e6840a98e823ffd671e051106d874e018c8ad1361",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_notification_capabilities.py"
+        ],
+        "capability": "notification.preferences.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "notification.preferences_changed@1",
+        "handler": "notification.preferences.update",
+        "ios_user_function": "Update authenticated-user notification channels and enabled state with revision CAS.",
+        "policy": "notification-owner",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/notification.preferences.update",
+            "event": "notification.preferences_changed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "16fa71c1af2159886e6c0b300c64e1bb9330d1fc44814dbb2942a4be202f2fbc",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_schedule_capabilities.py"
+        ],
+        "capability": "schedule.list",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "schedule.snapshot@1",
+        "handler": "schedule.list",
+        "ios_user_function": "Read the canonical task schedule for a tenant-visible QWS project.",
+        "policy": "qws-schedule-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/schedule.list",
+            "event": "schedule.snapshot",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "7579b7d78e14a556c6e36fe53ae3b01b946575666653d5e12ed152fcf130ce55",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_schedule_capabilities.py"
+        ],
+        "capability": "schedule.create",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "schedule.change_proposed@1",
+        "handler": "schedule.create",
+        "ios_user_function": "Propose dates for one currently unscheduled canonical QWS task.",
+        "policy": "qws-schedule-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/schedule.create",
+            "event": "schedule.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "29090958409b6609a61686505292d200a332023f8e16b44916969598a1bc564c",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_schedule_capabilities.py"
+        ],
+        "capability": "schedule.update",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "schedule.change_proposed@1",
+        "handler": "schedule.update",
+        "ios_user_function": "Propose replacement dates for one scheduled canonical QWS task.",
+        "policy": "qws-schedule-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/schedule.update",
+            "event": "schedule.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "19dc34e9de7b9ca02ce120a62ac4a32a27098fc0b9546a942ecb39716b7967e6",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
+      },
+      {
+        "automated_tests": [
+          "tests/test_schedule_capabilities.py"
+        ],
+        "capability": "schedule.delete",
+        "consumer": "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift:dispatchCapabilityEvent",
+        "event": "schedule.change_proposed@1",
+        "handler": "schedule.delete",
+        "ios_user_function": "Propose clearing dates from one scheduled canonical QWS task.",
+        "policy": "qws-schedule-access",
+        "production_receipt": {
+          "evidence": {
+            "batch_receipt": "ops/acceptance/receipts/20260919-production-capability-describe.json",
+            "batch_receipt_sha256": "ecca4fffcc967bf41f2fcd69661893256b353a0ac6814e95201d96d76b0c7c16",
+            "captured_at": "2026-09-18T19:09:17.235101+00:00",
+            "catalog_digest": "441637f924351eca81f1a7d30894eaaf4d535b443b2e72fa865db8e81090d104",
+            "endpoint": "/api/v1/capabilities/schedule.delete",
+            "event": "schedule.change_proposed",
+            "http_status": 200,
+            "implementation_status": "implemented",
+            "kind": "authenticated_describe",
+            "production_sha": "30e5f4a94a40ad36effa592e7ccce0786a40fbb0",
+            "renderer": "answer",
+            "renderer_version": 1,
+            "response_sha256": "521affc3da56af3acf2f422cc80abda5d4187034e6586af7ff15a8dfaaffc38a",
+            "version": "1.0.0"
+          },
+          "status": "implemented"
+        },
+        "qws_consumer": "frontend/src/features/quantum-workspace/TaskChatDrawer.jsx:consumeQCPEvent",
+        "renderer": "answer@1",
+        "status": "implemented"
       }
     ],
     "source": "ops/acceptance/pcm-ios-coverage.yaml",

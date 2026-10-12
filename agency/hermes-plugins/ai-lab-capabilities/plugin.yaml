@@ -1,6 +1,7 @@
 name: ai-lab-capabilities
-version: 2.2.1
-description: Governed Skill/Agency routing, QuanSyn execution, and safe no-key web extraction for Mac and cloud Hermes.
+version: 2.3.0
+description: Remote semantic JEV as the sole Skill/Agent selector, with resident shortlist, Hermes-only execution, and QCP enforcement.
+api: plugin_api.py
 provides_tools:
   - ai_lab_capabilities
   - ai_lab_execute
