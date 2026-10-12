@@ -4,14 +4,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .capability_router import install as install_capability_router
+from .capability_router import install as install_capability_router, _configured_owner
 from .research_deposit import ResearchDeposit
+from .quansyn import QuanSyn
 
 # Host lifecycle adapters can retain the registered instance, without model authority.
 research_deposition = None
 
 
 CAPABILITIES = {
+    "quansyn": {
+        "description": "For a trusted human QuanSyn gateway command use action=command. Complete every returned item independently, then use action=outputs once with id, success, full result text, paths, and structured blocks (or error for a failed item). Credentials and identity come only from trusted host state.",
+        "required": ["action"],
+    },
     "research_deposit": {
         "description": "Deposit parent-adopted research into the authorized existing-sync user Vault. Inputs: title, FULL adopted research body or analysis (not the brief user-facing summary), source_urls, confidence (null if unreviewed), source_kind=research_analysis. Body requires >=800 characters, substantive Markdown headings ## 事实, ## 分析, ## 启示 with actual newlines (not literal backslash-n), >=20 characters per section and source URLs in body. One task supports multiple items: call once per item, keep primary source URL first and stable for corrections; quality rejection without durable raw permits corrected resubmission. Same-item immutable append requires item_id and expected_revision (latest source_revision from status), with the same primary URL. Old payload replay never rolls back latest. Query an old receipt via action=status, item_id, source_revision. Each item supports at most 20 revisions. Or action=status/recover with known session_id/turn_id/task_id and optional item_id from status. Status stays discoverable while writing is disabled but requires local-owner authorization. Batch status supports limit=1..20 and cursor=next_cursor; recover selects at most 3 actionable items, with 3 lifetime attempts per item. Inspect recoverable/recovery_blocked_reason, actionable_total/blocked_total; has_more is pagination, not task completion. Finalizer only verifies: explicitly hand off adopted body; it never saves the final answer automatically. Writer control cannot create research items (research_task_association_required). No-save cannot be lifted by text or model inputs without a supported verified same-material host consent association. Completion requires all known items. Local owner default profile only; not a Wiki compilation receipt.",
         "required": [],
@@ -45,6 +50,7 @@ def _json(payload: dict[str, Any]) -> str:
 
 def register(ctx):
     global research_deposition
+    quansyn = QuanSyn(ctx, owner_check=_configured_owner)
     deposition = ResearchDeposit(ctx)
     research_deposition = deposition
     deposition.install()
@@ -56,7 +62,7 @@ def register(ctx):
         ctx.register_web_search_provider(build_provider())
     # Reuse Hermes' existing progressive disclosure and lifecycle hooks.  This
     # does not add another model-facing navigation tool.
-    install_capability_router(ctx, deposition=deposition)
+    install_capability_router(ctx, deposition=deposition, quansyn=quansyn)
 
     def list_capabilities(args: dict[str, Any], **kwargs) -> str:
         del args, kwargs
@@ -80,6 +86,15 @@ def register(ctx):
         inputs = args.get("inputs") or {}
         if not isinstance(inputs, dict):
             return _json({"success": False, "error": "inputs_must_be_object"})
+        if capability_id == "quansyn":
+            try:
+                if inputs.get("action") == "command":
+                    return _json(quansyn.command(**kwargs))
+                if inputs.get("action") == "outputs":
+                    return _json(quansyn.outputs(inputs, **kwargs))
+                raise ValueError("unsupported_quansyn_action")
+            except Exception:
+                return _json({"success": False, "error": "quansyn_output_rejected"})
         if capability_id == "research_deposit":
             return _json(deposition.execute(inputs, **kwargs))
         missing = [key for key in capability["required"] if not inputs.get(key)]

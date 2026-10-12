@@ -2835,7 +2835,7 @@ def _research_server_parity(request: dict[str, Any], **kwargs: Any) -> dict[str,
     return {"request": tuned, "source": "research_server_parity"}
 
 
-def install(ctx: Any, deposition: Any = None) -> None:
+def install(ctx: Any, deposition: Any = None, quansyn: Any = None) -> None:
     """Attach the router to Hermes' existing search, prompt, and hook lifecycle."""
     global _INSTALLED, _LOCAL_ENABLED
     if _INSTALLED:
@@ -2849,14 +2849,25 @@ def install(ctx: Any, deposition: Any = None) -> None:
     _compact_skill_manifest()
 
     def pre_llm_with_runtime_skill(user_message: str = "", **kwargs: Any):
-        return _pre_llm_with_runtime_skill(ctx, user_message, **kwargs)
+        routed = _pre_llm_with_runtime_skill(ctx, user_message, **kwargs)
+        transfer = quansyn.before_turn(user_message, **kwargs) if quansyn is not None else None
+        if transfer:
+            return {"context": str((routed or {}).get("context", "")) + "\n" + transfer["context"]}
+        return routed
 
     ctx.register_hook("pre_llm_call", pre_llm_with_runtime_skill)
     if (_LOCAL_ENABLED and callable(getattr(ctx, "register_middleware", None))
             and callable(getattr(ctx, "get_config", None))
             and ctx.get_config("research_delivery.server_parity", False) is True):
         ctx.register_middleware("llm_request", _research_server_parity)
-    ctx.register_hook("pre_tool_call", _pre_tool_call)
+    def pre_tool_with_quansyn(tool_name: str, args=None, **kwargs):
+        denial = _pre_tool_call(tool_name, args, **kwargs)
+        if denial is not None or quansyn is None:
+            return denial
+        effective, effective_args = _effective_local_call(tool_name, args or {})
+        return quansyn.pre_tool(effective, effective_args, **kwargs)
+
+    ctx.register_hook("pre_tool_call", pre_tool_with_quansyn)
     ctx.register_hook("post_tool_call", _post_tool_call)
     ctx.register_hook("transform_tool_result", _attest_publication_review_write)
     if _LOCAL_ENABLED:
@@ -2866,9 +2877,10 @@ def install(ctx: Any, deposition: Any = None) -> None:
         def transform_with_deposition(response_text: str = "", **kwargs: Any):
             # Native finalizer uses first-string-wins: keep ONE composed transform.
             routed = _transform_llm_output(response_text, **kwargs)
-            if deposition is not None:
-                return deposition.transform(routed or response_text, **kwargs) or routed
-            return routed
+            result = (deposition.transform(routed or response_text, **kwargs) or routed) if deposition is not None else routed
+            if quansyn is not None:
+                return quansyn.finalize(result or response_text, **kwargs) or result
+            return result
 
         ctx.register_hook("transform_llm_output", transform_with_deposition)
     _INSTALLED = True
