@@ -24,6 +24,8 @@
 ## Changed artifacts
 
 - `agency/hermes-plugins/ai-lab-capabilities/dashboard/plugin_api.py`
+- `agency/hermes-plugins/ai-lab-capabilities/dashboard/manifest.json`
+- `agency/hermes-plugins/ai-lab-capabilities/dashboard/index.js`
 - `agency/hermes-plugins/ai-lab-capabilities/desktop/plugin.js`
 - `agency/hermes-plugins/ai-lab-capabilities/plugin.yaml`
 - `tests/test_quansyn_desktop_relay.py`
@@ -50,3 +52,7 @@ Pending GitHub push. After remote SHA verification, copy the exact committed plu
 - Context is retained only when the pulled question is sent from the bound Hermes session.
 - `/copy` requires body and command in the same composer draft; `/copy` alone fails closed.
 - End-to-end publication cannot be verified without consuming and replying to a real QuanSyn request.
+
+## Post-deployment correction
+
+The first runtime probe showed no QuanSyn path in authenticated OpenAPI because Desktop discovers backend plugin APIs from `dashboard/manifest.json`, not the agent-level `plugin.yaml`. The source now declares a hidden dashboard plugin with `api: plugin_api.py` and a no-op dashboard entry; the misleading agent-level `api` field was removed. This is covered by a manifest regression test.

@@ -1,0 +1,10 @@
+{
+  "name": "ai-lab-capabilities",
+  "label": "AI Lab Capabilities",
+  "description": "Local QuanSyn Desktop relay API.",
+  "icon": "Plug",
+  "version": "2.3.0",
+  "tab": { "hidden": true },
+  "entry": "index.js",
+  "api": "plugin_api.py"
+}

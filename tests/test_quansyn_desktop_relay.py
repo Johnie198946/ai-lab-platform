@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -24,6 +25,16 @@ def load_module():
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_dashboard_manifest_declares_hidden_api_plugin():
+    dashboard = MODULE_PATH.parent
+    manifest = json.loads((dashboard / "manifest.json").read_text())
+
+    assert manifest["name"] == "ai-lab-capabilities"
+    assert manifest["api"] == "plugin_api.py"
+    assert manifest["tab"] == {"hidden": True}
+    assert (dashboard / manifest["entry"]).is_file()
 
 
 def test_pull_to_composer_selects_one_pending_request(monkeypatch):
