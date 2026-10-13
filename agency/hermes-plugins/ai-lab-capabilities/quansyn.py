@@ -16,6 +16,7 @@ import httpx
 
 COMMAND = re.compile(r"(批量执行|查看|绑定|拉取并执行|拉取|执行|推送)\s*QuanSyn(?:\s+(\S+))?(?:\s+附件\s+([0-9,，]+))?", re.I)
 SLASH = re.compile(r"/quansyn(?:\s+(qs_[a-f0-9]{32}))?", re.I)
+PUSH_SLASH = re.compile(r"/push", re.I)
 ID = re.compile(r"qs_[a-f0-9]{32}")
 RUN_TTL_SECONDS = 2 * 60 * 60
 MAX_BATCH_ITEMS = 100
@@ -33,6 +34,8 @@ def canonical_command(text):
     if match:
         transfer = match.group(1)
         return "拉取并执行 QuanSyn " + transfer if transfer else "批量执行 QuanSyn"
+    if PUSH_SLASH.fullmatch(value):
+        return "推送 QuanSyn"
     if value.lower() == "quansyn":
         return "查看 QuanSyn"
     return value if COMMAND.fullmatch(value) else None
@@ -400,9 +403,14 @@ class QuanSyn:
         if not match:
             self.turns.pop(session, None)
             return None
+        previous = self.turns.get(session, {})
         if len(self.turns) >= 128:
             self.turns.clear()
         action, transfer, selection = match.groups()
+        if action == "推送" and not transfer:
+            candidate = str(previous.get("id") or "")
+            if previous.get("sender") == sender and ID.fullmatch(candidate):
+                transfer = candidate
         turn = {"sender": sender, "action": action, "id": transfer, "turn_id": kw.get("turn_id"), "reply": None}
         callback = self.card_callbacks.pop(sender, None)
         if callback and callback[1] == command:

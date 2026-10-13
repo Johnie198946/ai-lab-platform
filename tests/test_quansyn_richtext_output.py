@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import types
 from pathlib import Path
 
 
@@ -75,3 +76,40 @@ def test_batch_and_single_execution_request_structured_blocks_without_losing_res
         {"sender": sender, "action": "执行", "id": single_id, "selection": None, "turn_id": "t2", "reply": None}
     )
     assert_richtext_instruction(single)
+
+
+def test_push_slash_reuses_current_session_quansyn_target(tmp_path):
+    module = load_quansyn_module()
+    quansyn = module.QuanSyn(Context(tmp_path), owner_check=lambda platform, sender: True)
+    transfer_id = "qs_" + "c" * 32
+    quansyn.turns["session-1"] = {"sender": "owner", "id": transfer_id}
+
+    source = types.SimpleNamespace(
+        platform="feishu", user_id="owner", chat_id="chat-1", chat_type="dm"
+    )
+    event = types.SimpleNamespace(source=source, text="/push", raw_message=None)
+    gateway = types.SimpleNamespace(adapters={})
+
+    assert quansyn.gateway(event=event, gateway=gateway) == {
+        "action": "rewrite", "text": "推送 QuanSyn"
+    }
+    injected = quansyn.before_turn(
+        "推送 QuanSyn", platform="feishu", session_id="session-1",
+        sender_id="owner", turn_id="turn-2"
+    )
+
+    assert injected is not None
+    assert quansyn.turns["session-1"]["id"] == transfer_id
+
+
+def test_push_slash_never_reuses_another_senders_target(tmp_path):
+    module = load_quansyn_module()
+    quansyn = module.QuanSyn(Context(tmp_path), owner_check=lambda platform, sender: True)
+    quansyn.turns["session-1"] = {"sender": "other", "id": "qs_" + "d" * 32}
+
+    quansyn.before_turn(
+        "推送 QuanSyn", platform="feishu", session_id="session-1",
+        sender_id="owner", turn_id="turn-2"
+    )
+
+    assert quansyn.turns["session-1"]["id"] is None

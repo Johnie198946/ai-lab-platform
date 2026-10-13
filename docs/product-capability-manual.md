@@ -124,6 +124,7 @@ Web request
 - “拉取到输入框”只做 claim/download 和 composer 预填，禁止自动发送、自动执行模型或自动外发结果。
 - Desktop 只保留最小活动关联 `transfer_id + session_id + pulled_at`。有未完成活动请求时不得静默覆盖；session 不匹配、活动目标缺失或目标不唯一时，`/push`、`/copy` 必须 fail closed。
 - `/push` 只读取当前 session 最近一条非隐藏、非空、已持久化的 assistant 消息；不得读取 tool/system/error、其他 session 或流式中间片段。
+- Feishu/Lark 的 `/push` 由现有 `pre_gateway_dispatch` 斜杠入口改写到既有 `推送 QuanSyn` 动作，只能复用同一 owner、同一 Hermes session 中紧邻的 QuanSyn 活动目标；无目标、跨用户或跨 session 时必须 fail closed，禁止回落到其他历史任务。
 - `/copy` 的正文必须与命令同处一个 composer draft；仅输入 `/copy` 时拒绝发布，不能从历史消息猜测正文。
 - owner/principal 只能由本机可信环境解析；Desktop 不得提交或覆盖身份。远端 token 只从 macOS Keychain 读取，不进入模型输入、代码、日志或 receipt。
 - 发布必须携带稳定 idempotency key 和 `reply_to=transfer_id`，并保留完整纯文本 `result/text` 与完整 Markdown block；HTTP 2xx 之后仍需返回远端结果 ID 才能显示成功。

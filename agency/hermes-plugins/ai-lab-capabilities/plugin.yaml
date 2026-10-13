@@ -1,5 +1,5 @@
 name: ai-lab-capabilities
-version: 2.3.0
+version: 2.3.1
 description: Remote semantic JEV as the sole Skill/Agent selector, with resident shortlist, Hermes-only execution, and QCP enforcement.
 provides_tools:
   - ai_lab_capabilities
