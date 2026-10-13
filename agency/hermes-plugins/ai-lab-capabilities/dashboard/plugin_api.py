@@ -9,6 +9,16 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+try:
+    from ..quansyn_relay import push_recent, draft_text
+except ImportError:  # standalone dashboard loading
+    import importlib.util
+    _helper_path = Path(__file__).resolve().parent.parent / "quansyn_relay.py"
+    _spec = importlib.util.spec_from_file_location("quansyn_relay", _helper_path)
+    _relay = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_relay)
+    push_recent, draft_text = _relay.push_recent, _relay.draft_text
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -26,17 +36,11 @@ MAX_PENDING = 100
 
 
 class PullBody(BaseModel):
-    transfer_id: str | None = Field(None, pattern=ID_PATTERN)
+    pass
 
 
 class PublishCopyBody(BaseModel):
-    transfer_id: str = Field(pattern=ID_PATTERN)
     text: str = Field(min_length=1, max_length=250_000)
-
-
-class PublishLastBody(BaseModel):
-    transfer_id: str = Field(pattern=ID_PATTERN)
-    session_id: str = Field(min_length=1, max_length=200)
 
 
 def _digest(value: str) -> str:
@@ -85,8 +89,11 @@ def _token(sender: str) -> str:
     return result.stdout.strip()
 
 
-def _request(sender: str, method: str, path: str, *, payload=None, sink=None):
+def _request(sender: str, method: str, path: str, *, payload=None, sink=None, data=None, filename=None):
     headers = {"Authorization": "Bearer " + _token(sender), "X-QuanSyn-Sender": sender}
+    if filename:
+        headers["X-File-Name"] = quote(filename, safe="")
+        headers["Content-Type"] = "application/octet-stream"
     with httpx.Client(timeout=60, follow_redirects=False) as client:
         if sink is not None:
             with client.stream(method, _api_base() + "/api/v1/quansyn" + path, headers=headers) as response:
@@ -101,7 +108,7 @@ def _request(sender: str, method: str, path: str, *, payload=None, sink=None):
                     digest.update(chunk)
                     sink.write(chunk)
                 return digest.hexdigest()
-        response = client.request(method, _api_base() + "/api/v1/quansyn" + path, headers=headers, json=payload)
+        response = client.request(method, _api_base() + "/api/v1/quansyn" + path, headers=headers, json=payload, content=data)
     if response.status_code >= 300:
         raise ValueError(f"QuanSyn request failed (HTTP {response.status_code})")
     return response.json()
@@ -136,6 +143,7 @@ def _write_state(sender: str, transfer_id: str, value: dict) -> None:
 def _pending(sender: str) -> list[dict]:
     rows: list[dict] = []
     before = None
+    seen = set()
     while True:
         suffix = "?target=mac&pending=true&limit=100"
         if before:
@@ -143,10 +151,15 @@ def _pending(sender: str) -> list[dict]:
         page = _request(sender, "GET", "/transfers" + suffix)
         batch = page.get("items", []) if isinstance(page, dict) else []
         rows.extend(batch)
+        if len(rows) > MAX_PENDING:
+            raise ValueError("QuanSyn pending queue exceeds 100 items")
         before = page.get("next") if isinstance(page, dict) else None
         if not before:
             return rows
-        if len(rows) >= MAX_PENDING:
+        if before in seen:
+            raise ValueError("QuanSyn pagination cursor repeated")
+        seen.add(before)
+        if len(rows) >= MAX_PENDING or len(seen) > MAX_PENDING:
             raise ValueError("QuanSyn pending queue exceeds 100 items")
 
 
@@ -159,6 +172,7 @@ def _pull_one(sender: str, transfer_id: str) -> dict:
         return saved
 
     claim = str(saved.get("claim") or secrets.token_urlsafe(32))
+    _write_state(sender, transfer_id, {**saved, "claim": claim})
     leased = _request(sender, "POST", f"/transfers/{transfer_id}/claim", payload={"revision": row["revision"], "claim": claim})
     files = []
     root = _root(sender, transfer_id)
@@ -188,64 +202,17 @@ def _pull_one(sender: str, transfer_id: str) -> dict:
         "imported": False,
     }
     _write_state(sender, transfer_id, saved)
-    _request(sender, "POST", f"/transfers/{transfer_id}/imported", payload={"revision": leased["revision"], "claim": claim})
-    saved["imported"] = True
+    saved["revision"] = leased["revision"]
     _write_state(sender, transfer_id, saved)
     return saved
 
 
-def _content_text(value) -> str:
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        parts = []
-        for item in value:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "\n".join(part for part in parts if part).strip()
-    if isinstance(value, dict) and isinstance(value.get("text"), str):
-        return value["text"].strip()
-    return ""
+class RecentBody(BaseModel):
+    session_id: str = Field(min_length=1, max_length=200)
 
 
-def _last_assistant_text(session_id: str) -> str:
-    from hermes_state import SessionDB
-    db = SessionDB(read_only=True)
-    try:
-        resolved = db.resolve_resume_session_id(session_id)
-        messages = db.get_messages(resolved, include_compacted=True, latest=True, limit=100)
-    finally:
-        db.close()
-    for message in reversed(messages):
-        if message.get("role") != "assistant" or message.get("display_kind") == "hidden":
-            continue
-        text = _content_text(message.get("display_content")) or _content_text(message.get("content"))
-        if text:
-            return text
-    raise ValueError("No assistant output is available in the current Mac chat")
-
-
-def _publish(sender: str, transfer_id: str, text: str, source: str) -> dict:
-    text = text.strip()
-    if not text:
-        raise ValueError("Cannot publish an empty message")
-    parent = _request(sender, "GET", "/transfers/" + transfer_id)
-    if parent.get("direction") != "request" or parent.get("target") != "mac":
-        raise ValueError("The active QuanSyn request is invalid")
-    blocks = [{"kind": "markdown", "content": text, "labels": [], "values": []}]
-    request_id = "desktop-" + _digest(transfer_id + "\0" + source + "\0" + text)
-    receipt = _request(sender, "POST", "/transfers", payload={
-        "request_id": request_id,
-        "direction": "result",
-        "target": "mac",
-        "reply_to": transfer_id,
-        "text": text,
-        "blocks": blocks,
-        "files": [],
-    })
-    return {"success": True, "transfer_id": transfer_id, "result_id": receipt["id"], "request_id": request_id}
+class AckBody(BaseModel):
+    transfer_ids: list[str] = Field(max_length=MAX_PENDING)
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -257,14 +224,45 @@ def _error(exc: Exception) -> HTTPException:
 def pull_to_composer(body: PullBody):
     try:
         sender = _owner_sender()
-        transfer_id = body.transfer_id
-        if transfer_id is None:
-            rows = _pending(sender)
-            if not rows:
-                return {"success": True, "empty": True}
-            transfer_id = str(rows[0]["id"])
-        saved = _pull_one(sender, transfer_id)
-        return {"success": True, "empty": False, "id": transfer_id, "text": saved["text"], "blocks": saved["blocks"], "files": saved["files"]}
+        rows = _pending(sender)
+        items = [_pull_one(sender, str(row["id"])) for row in rows]
+        return {"success": True, "empty": not items, "items": items,
+                "text": "\n\n".join(draft_text(row) for row in items)}
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.post("/desktop/pull-presented")
+def pull_presented(body: AckBody):
+    try:
+        sender = _owner_sender()
+        for transfer in body.transfer_ids:
+            import re
+            if not re.fullmatch(ID_PATTERN, transfer):
+                raise ValueError("Invalid transfer ID")
+            saved = _read_state(sender, transfer)
+            if saved.get("imported"):
+                continue
+            if "revision" not in saved:
+                raise ValueError("Draft not fetched")
+            for file in saved["files"]:
+                with Path(file["path"]).open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != file["hash"]:
+                        raise ValueError("Attachment changed before presentation")
+            _request(sender, "POST", f"/transfers/{transfer}/imported",
+                     payload={"revision": saved["revision"], "claim": saved["claim"]})
+            saved["imported"] = True
+            _write_state(sender, transfer, saved)
+        return {"success": True}
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.post("/desktop/push-recent")
+def push_recent_session(body: RecentBody):
+    try:
+        return push_recent(_owner_sender(), body.session_id,
+                           get_hermes_home() / "plugin-data" / "ai-lab-capabilities", _request)
     except Exception as exc:
         raise _error(exc) from exc
 
@@ -272,15 +270,12 @@ def pull_to_composer(body: PullBody):
 @router.post("/desktop/push-copy")
 def push_copy(body: PublishCopyBody):
     try:
-        return _publish(_owner_sender(), body.transfer_id, body.text, "copy")
-    except Exception as exc:
-        raise _error(exc) from exc
-
-
-@router.post("/desktop/push-last")
-def push_last(body: PublishLastBody):
-    try:
-        text = _last_assistant_text(body.session_id)
-        return _publish(_owner_sender(), body.transfer_id, text, "last-assistant")
+        sender = _owner_sender()
+        payload = {"request_id": "copy-" + _digest(sender + "\0" + body.text),
+                   "direction": "result", "target": "mac", "text": body.text, "files": []}
+        receipt = _request(sender, "POST", "/transfers", payload=payload)
+        if not receipt.get("id"):
+            raise ValueError("Remote transfer was not confirmed")
+        return {"success": True, "result_id": receipt["id"]}
     except Exception as exc:
         raise _error(exc) from exc

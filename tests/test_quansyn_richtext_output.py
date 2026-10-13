@@ -78,38 +78,87 @@ def test_batch_and_single_execution_request_structured_blocks_without_losing_res
     assert_richtext_instruction(single)
 
 
-def test_push_slash_reuses_current_session_quansyn_target(tmp_path):
+def test_public_slashes_skip_without_model_or_binding(tmp_path):
     module = load_quansyn_module()
     quansyn = module.QuanSyn(Context(tmp_path), owner_check=lambda platform, sender: True)
-    transfer_id = "qs_" + "c" * 32
-    quansyn.turns["session-1"] = {"sender": "owner", "id": transfer_id}
-
-    source = types.SimpleNamespace(
-        platform="feishu", user_id="owner", chat_id="chat-1", chat_type="dm"
-    )
-    event = types.SimpleNamespace(source=source, text="/push", raw_message=None)
-    gateway = types.SimpleNamespace(adapters={})
-
-    assert quansyn.gateway(event=event, gateway=gateway) == {
-        "action": "rewrite", "text": "推送 QuanSyn"
-    }
-    injected = quansyn.before_turn(
-        "推送 QuanSyn", platform="feishu", session_id="session-1",
-        sender_id="owner", turn_id="turn-2"
-    )
-
-    assert injected is not None
-    assert quansyn.turns["session-1"]["id"] == transfer_id
+    source = types.SimpleNamespace(platform="feishu", user_id="owner", chat_id="chat-1", chat_type="dm")
+    calls = []
+    quansyn.schedule_relay = lambda *args: calls.append(args)
+    for command in ("/push", "/pull"):
+        event = types.SimpleNamespace(source=source, text=command, raw_message=None)
+        assert quansyn.gateway(event=event, gateway=types.SimpleNamespace(adapters={})) == {
+            "action": "skip", "reason": "quansyn_relay_only"}
+        assert module.canonical_command(command) is None
+        assert quansyn.before_turn(command, platform="feishu", session_id="session-1", sender_id="owner") is None
+    assert len(calls) == 2
+    for legacy in ("/quansyn", "查看 QuanSyn", "执行 QuanSyn qs_" + "a" * 32,
+                   "推送 QuanSyn qs_" + "a" * 32):
+        assert module.canonical_command(legacy) is None
 
 
-def test_push_slash_never_reuses_another_senders_target(tmp_path):
+def test_feishu_uses_current_store_session_and_sends_drafts(tmp_path):
+    import asyncio
+    import json
     module = load_quansyn_module()
-    quansyn = module.QuanSyn(Context(tmp_path), owner_check=lambda platform, sender: True)
-    quansyn.turns["session-1"] = {"sender": "other", "id": "qs_" + "d" * 32}
 
-    quansyn.before_turn(
-        "推送 QuanSyn", platform="feishu", session_id="session-1",
-        sender_id="owner", turn_id="turn-2"
-    )
+    async def scenario():
+        q = module.QuanSyn(Context(tmp_path), owner_check=lambda *args: True)
+        source = types.SimpleNamespace(platform="feishu", user_id="owner", chat_id="chat", chat_type="dm")
+        sent, acked, selected = [], [], []
+        class Adapter:
+            _loop = asyncio.get_running_loop()
+            async def _feishu_send_with_retry(self, **kw):
+                sent.append(json.loads(kw["payload"]))
+                return True
+            def _finalize_send_result(self, result, _error):
+                return types.SimpleNamespace(success=result)
+        class Store:
+            def get_or_create_session(self, actual):
+                assert actual is source
+                return types.SimpleNamespace(session_id="current-session")
+            def _db_for_session_id(self, session):
+                assert session == "current-session"
+                return "same-db"
+        q.pending_rows = lambda sender: [{"id": "one"}, {"id": "two"}]
+        q.pull = lambda sender, ident, acknowledge: {"id": ident, "text": ident, "files": []}
+        q.ack_relay_pull = lambda sender, item: acked.append(item["id"])
+        def push(owner, session, directory, http, db):
+            selected.append((session, db))
+            return {"noop": True, "success": True}
+        module.push_recent = push
+        adapter = Adapter()
+        gateway = types.SimpleNamespace(adapters={"feishu": adapter}, session_store=Store())
+        for command in ("/pull", "/push"):
+            event = types.SimpleNamespace(source=source, text=command, raw_message=None)
+            assert q.gateway(event=event, gateway=gateway)["action"] == "skip"
+            tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+            await asyncio.gather(*tasks)
+        assert acked == ["one", "two"]
+        assert [card["header"]["title"]["content"] for card in sent[:2]] == ["待发送草稿"] * 2
+        assert selected == [("current-session", "same-db")]
+    asyncio.run(scenario())
 
-    assert quansyn.turns["session-1"]["id"] is None
+
+def test_feishu_failed_presentation_does_not_ack(tmp_path):
+    import asyncio
+    module = load_quansyn_module()
+    async def scenario():
+        q = module.QuanSyn(Context(tmp_path))
+        source = types.SimpleNamespace(chat_id='synthetic-chat')
+        acked = []
+        class Adapter:
+            _loop = asyncio.get_running_loop()
+            async def _feishu_send_with_retry(self, **kw):
+                return False
+            def _finalize_send_result(self, result, error):
+                return types.SimpleNamespace(success=False)
+        q.pending_rows = lambda sender: [{'id': 'synthetic'}]
+        q.pull = lambda *args: {'id': 'synthetic', 'text': 'draft', 'files': []}
+        q.ack_relay_pull = lambda *args: acked.append(args)
+        q.schedule_relay(Adapter(), source, 'owner', '/pull', None)
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        # Both draft and failure receipt delivery fail. Neither permits an ack.
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert results == [None]
+        assert not acked
+    asyncio.run(scenario())

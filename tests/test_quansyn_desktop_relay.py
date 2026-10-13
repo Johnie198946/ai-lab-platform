@@ -37,81 +37,26 @@ def test_dashboard_manifest_declares_hidden_api_plugin():
     assert (dashboard / manifest["entry"]).is_file()
 
 
-def test_pull_to_composer_selects_one_pending_request(monkeypatch):
+def test_pull_all_pending_and_include_paths(monkeypatch):
     module = load_module()
-    transfer_id = "qs_" + "a" * 32
     monkeypatch.setattr(module, "_owner_sender", lambda: "owner")
-    monkeypatch.setattr(module, "_pending", lambda sender: [{"id": transfer_id}])
-    monkeypatch.setattr(
-        module,
-        "_pull_one",
-        lambda sender, item: {"text": "question", "blocks": [], "files": [{"path": "/tmp/input.pdf"}]},
-    )
-
+    monkeypatch.setattr(module, "_pending", lambda sender: [{"id": "one"}, {"id": "two"}])
+    monkeypatch.setattr(module, "_pull_one", lambda sender, ident: {
+        "id": ident, "text": ident, "files": [{"name": "input.pdf", "path": "/tmp/input.pdf"}]})
     result = module.pull_to_composer(module.PullBody())
-
-    assert result == {
-        "success": True,
-        "empty": False,
-        "id": transfer_id,
-        "text": "question",
-        "blocks": [],
-        "files": [{"path": "/tmp/input.pdf"}],
-    }
+    assert [row["id"] for row in result["items"]] == ["one", "two"]
+    assert result["text"].count("/tmp/input.pdf") == 2
 
 
-def test_publish_keeps_full_text_and_markdown_block_with_stable_id(monkeypatch):
-    module = load_module()
-    transfer_id = "qs_" + "b" * 32
-    calls = []
-
-    def request(_sender, method, path, *, payload=None, sink=None):
-        del sink
-        calls.append((method, path, payload))
-        if method == "GET":
-            return {"direction": "request", "target": "mac"}
-        return {"id": "qs_" + "c" * 32}
-
-    monkeypatch.setattr(module, "_request", request)
-    first = module._publish("owner", transfer_id, "# Answer\n\n|A|B|\n|-|-|\n|1|2|", "copy")
-    second = module._publish("owner", transfer_id, "# Answer\n\n|A|B|\n|-|-|\n|1|2|", "copy")
-
-    assert first["request_id"] == second["request_id"]
-    payload = calls[1][2]
-    assert payload["text"].startswith("# Answer")
-    assert payload["blocks"] == [{
-        "kind": "markdown",
-        "content": payload["text"],
-        "labels": [],
-        "values": [],
-    }]
-    assert payload["reply_to"] == transfer_id
-
-
-def test_push_last_reads_latest_visible_assistant_message(monkeypatch):
-    module = load_module()
-
-    class FakeDB:
-        def __init__(self, read_only=False):
-            assert read_only is True
-
-        def resolve_resume_session_id(self, session_id):
-            return session_id
-
-        def get_messages(self, *_args, **_kwargs):
-            return [
-                {"role": "assistant", "content": "older"},
-                {"role": "assistant", "content": "hidden", "display_kind": "hidden"},
-                {"role": "user", "content": "question"},
-                {"role": "assistant", "display_content": "**latest**", "content": "carrier"},
-            ]
-
-        def close(self):
-            pass
-
-    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=FakeDB))
-
-    assert module._last_assistant_text("session-1") == "**latest**"
+def test_desktop_has_no_binding_and_intercepts_commands():
+    source = (MODULE_PATH.parent.parent / "desktop" / "plugin.js").read_text()
+    assert "ACTIVE_KEY" not in source
+    assert "transfer_id:" not in source
+    assert "activeForSession" not in source
+    assert "/desktop/push-recent" in source
+    assert "/desktop/pull-presented" in source
+    assert source.index("insertIntoComposer(row.text)") < source.index("'/desktop/pull-presented'")
+    assert "ai_lab_execute" not in source
 
 
 def test_owner_resolution_fails_closed_when_ambiguous(monkeypatch):
@@ -125,3 +70,60 @@ def test_owner_resolution_fails_closed_when_ambiguous(monkeypatch):
         assert "exactly one" in str(exc)
     else:
         raise AssertionError("ambiguous owner configuration must fail closed")
+
+
+def test_pending_pagination_limits_and_all_pages(monkeypatch):
+    import pytest
+    module = load_module()
+    pages = iter([{'items': [{'id': 'one'}], 'next': 'next'}, {'items': [{'id': 'two'}]}])
+    monkeypatch.setattr(module, '_request', lambda *a, **kw: next(pages))
+    assert [r['id'] for r in module._pending('owner')] == ['one', 'two']
+    monkeypatch.setattr(module, '_request', lambda *a, **kw: {'items': [{}] * 101})
+    with pytest.raises(ValueError, match='exceeds'):
+        module._pending('owner')
+
+
+def test_pull_attachment_failure_never_imports_and_reuses_claim(monkeypatch, tmp_path):
+    import hashlib
+    import pytest
+    module = load_module()
+    ident = 'qs_' + 'a' * 32
+    monkeypatch.setattr(module, 'get_hermes_home', lambda: tmp_path)
+    calls = []
+    def request(sender, method, path, **kw):
+        calls.append((path, kw))
+        if method == 'GET' and path.startswith('/transfers/'):
+            return {'direction': 'request', 'target': 'mac', 'revision': 1, 'text': 'draft',
+                    'files': [{'artifact_id': 'ga_' + 'b' * 32, 'filename': 'test.txt',
+                               'content_hash': hashlib.sha256(b'expected').hexdigest()}]}
+        if path.endswith('/claim'):
+            return {'revision': 2}
+        if path.startswith('/files/'):
+            kw['sink'].write(b'wrong')
+            return hashlib.sha256(b'wrong').hexdigest()
+        raise AssertionError('must not import failed attachments')
+    monkeypatch.setattr(module, '_request', request)
+    for _ in range(2):
+        with pytest.raises(ValueError, match='hash mismatch'):
+            module._pull_one('owner', ident)
+    claims = [kw['payload']['claim'] for path, kw in calls if path.endswith('/claim')]
+    assert len(claims) == 2 and claims[0] == claims[1]
+    assert not module._read_state('owner', ident).get('imported')
+
+
+def test_desktop_recent_reads_exact_current_session(monkeypatch, tmp_path):
+    module = load_module()
+    seen = []
+    class FakeDB:
+        def __init__(self, read_only):
+            assert read_only
+        def get_messages(self, session, **kw):
+            seen.append(session)
+            return []
+        def close(self):
+            pass
+    monkeypatch.setitem(sys.modules, 'hermes_state', types.SimpleNamespace(SessionDB=FakeDB))
+    monkeypatch.setattr(module, '_owner_sender', lambda: 'owner')
+    monkeypatch.setattr(module, 'get_hermes_home', lambda: tmp_path)
+    assert module.push_recent_session(module.RecentBody(session_id='focused-current'))['noop']
+    assert seen == ['focused-current']

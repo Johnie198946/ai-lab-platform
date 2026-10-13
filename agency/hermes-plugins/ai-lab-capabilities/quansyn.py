@@ -1,9 +1,10 @@
-"""Manual Feishu QuanSyn commands on the existing Hermes execution lifecycle."""
+"""Relay-only public mailbox commands; explicit execution is legacy compatibility."""
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -12,11 +13,19 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+try:
+    from .quansyn_relay import push_recent, draft_text
+except ImportError:  # standalone plugin loading
+    import importlib.util
+    _helper_path = Path(__file__).resolve().parent / "quansyn_relay.py"
+    _spec = importlib.util.spec_from_file_location("quansyn_relay", _helper_path)
+    _relay = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_relay)
+    push_recent, draft_text = _relay.push_recent, _relay.draft_text
+
 import httpx
 
-COMMAND = re.compile(r"(批量执行|查看|绑定|拉取并执行|拉取|执行|推送)\s*QuanSyn(?:\s+(\S+))?(?:\s+附件\s+([0-9,，]+))?", re.I)
-SLASH = re.compile(r"/quansyn(?:\s+(qs_[a-f0-9]{32}))?", re.I)
-PUSH_SLASH = re.compile(r"/push", re.I)
+COMMAND = re.compile(r"(绑定)\s*QuanSyn(?:\s+(\S+))?(?:\s+附件\s+([0-9,，]+))?", re.I)
 ID = re.compile(r"qs_[a-f0-9]{32}")
 RUN_TTL_SECONDS = 2 * 60 * 60
 MAX_BATCH_ITEMS = 100
@@ -30,14 +39,8 @@ def digest(text):
 def canonical_command(text):
     """Map the public slash entry point to the existing trusted command grammar."""
     value = str(text or "").strip().replace("qs\\_", "qs_")
-    match = SLASH.fullmatch(value)
-    if match:
-        transfer = match.group(1)
-        return "拉取并执行 QuanSyn " + transfer if transfer else "批量执行 QuanSyn"
-    if PUSH_SLASH.fullmatch(value):
-        return "推送 QuanSyn"
-    if value.lower() == "quansyn":
-        return "查看 QuanSyn"
+    if value.lower() in {"/push", "/pull"}:
+        return None
     return value if COMMAND.fullmatch(value) else None
 
 
@@ -81,7 +84,8 @@ class QuanSyn:
         value = getattr(getattr(native, "action", None), "value", None)
         card = isinstance(value, dict) and "quansyn_command" in value
         command = str(value.get("quansyn_command", "")) if isinstance(value, dict) and card else canonical_command(text)
-        if not command:
+        relay_command = text.lower() if text.lower() in {"/pull", "/push"} and not card else None
+        if not command and not relay_command:
             return None
         sender = str(getattr(source, "user_id", "") or "")
         chat_id = str(getattr(source, "chat_id", "") or "")
@@ -91,13 +95,13 @@ class QuanSyn:
                 return {"action": "skip", "reason": "quansyn_private_chat_only"}
         if not sender or not self.owner_check(str(getattr(platform, "value", platform)), sender):
             return {"action": "skip", "reason": "quansyn_local_owner_required"}
+        if relay_command:
+            adapter = getattr(gateway, "adapters", {}).get(platform)
+            store = kw.get("session_store") or getattr(gateway, "session_store", None)
+            self.schedule_relay(adapter, source, sender, relay_command, store)
+            return {"action": "skip", "reason": "quansyn_relay_only"}
         if card:
-            operator = str(getattr(getattr(native, "operator", None), "open_id", "") or "")
-            if (not operator or operator not in {sender, getattr(source, "user_id_alt", None)}
-                    or value.get("sender_id") != sender):
-                return {"action": "skip", "reason": "quansyn_card_owner_mismatch"}
-            if not COMMAND.fullmatch(command) or command.startswith("绑定"):
-                return {"action": "skip", "reason": "quansyn_invalid_card_command"}
+            return {"action": "skip", "reason": "quansyn_legacy_card_disabled"}
         adapter = getattr(gateway, "adapters", {}).get(platform)
         if adapter is not None:
             if len(self.delivery) >= 128 and sender not in self.delivery:
@@ -117,6 +121,71 @@ class QuanSyn:
                     self.card_callbacks[sender] = (message_id, command)
                 self.update_progress_card(adapter, message_id, sender, command)
         return {"action": "rewrite", "text": command}
+
+    def schedule_relay(self, adapter, source, sender, command, store):
+        # The gateway hook is synchronous; schedule on the existing adapter loop.
+        loop = getattr(adapter, "_loop", None)
+        if loop is None or not loop.is_running():
+            return False
+
+        async def send(text, title="QuanSyn 回执"):
+            # Keep full text, split to stay within Feishu card payload bounds.
+            for offset in range(0, len(text), 4000):
+                payload = {"config": {"wide_screen_mode": True},
+                           "header": {"title": {"tag": "plain_text", "content": title}},
+                           "elements": [{"tag": "markdown", "content": text[offset:offset + 4000]}]}
+                response = await adapter._feishu_send_with_retry(
+                    chat_id=str(source.chat_id), msg_type="interactive",
+                    payload=json.dumps(payload, ensure_ascii=False), reply_to=None, metadata=None)
+                if not adapter._finalize_send_result(response, "QuanSyn relay delivery failed").success:
+                    raise ValueError("待发送草稿未成功发送，未确认导入")
+
+        async def run():
+            try:
+                if command == "/push":
+                    if store is None:
+                        raise ValueError("Hermes SessionStore unavailable")
+                    entry = await asyncio.to_thread(store.get_or_create_session, source)
+                    # Borrow the same scoped SessionDB that Hermes uses for this session.
+                    db = store._db_for_session_id(entry.session_id)
+                    if db is None:
+                        raise ValueError("Hermes SessionDB unavailable")
+                    receipt = await asyncio.to_thread(push_recent, sender, entry.session_id,
+                                                      self.ctx.state.data_dir, self.http, db)
+                    await send(receipt.get("receipt") or "无新的可推送消息。")
+                else:
+                    rows = await asyncio.to_thread(self.pending_rows, sender)
+                    items = [await asyncio.to_thread(self.pull, sender, row["id"], False) for row in rows]
+                    for item in items:
+                        await send(draft_text(item), "待发送草稿")
+                        await asyncio.to_thread(self.ack_relay_pull, sender, item)
+                    if not items:
+                        await send("暂无新的 QuanSyn 消息。")
+            except Exception as exc:
+                try:
+                    await send(str(exc) if isinstance(exc, (ValueError, OSError)) else "QuanSyn 操作失败，未确认成功。")
+                except Exception:
+                    logging.getLogger(__name__).warning("QuanSyn relay receipt delivery failed; operation not presented")
+
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if current is loop:
+            loop.create_task(run())
+        else:
+            asyncio.run_coroutine_threadsafe(run(), loop)
+        return True
+
+    def ack_relay_pull(self, sender, saved):
+        for file in saved["files"]:
+            with Path(file["path"]).open("rb") as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != file["hash"]:
+                    raise ValueError("附件哈希不符，未确认导入")
+        self.http(sender, "POST", f"/transfers/{saved['id']}/imported",
+                  payload={"revision": saved["revision"], "claim": saved["claim"]})
+        saved["imported"] = True
+        self.ctx.state.set(self.key(sender, saved["id"]), saved)
 
     def run_card_action(self, adapter, message_id, sender, action, transfer, selection):
         """Run deterministic card actions without creating an LLM turn."""
@@ -292,6 +361,7 @@ class QuanSyn:
         """Collect every server-pending row without silently truncating pagination."""
         rows = []
         before = None
+        seen = set()
         while True:
             suffix = "?target=mac&pending=true&limit=100"
             if before:
@@ -302,10 +372,15 @@ class QuanSyn:
                 raise ValueError("QuanSyn 待处理队列返回格式无效")
             batch = page.get("items", [])
             rows.extend(batch)
+            if len(rows) > MAX_BATCH_ITEMS:
+                raise ValueError("QuanSyn pending queue exceeds 100 items")
             before = page.get("next")
             if not before:
                 break
-            if len(rows) >= MAX_BATCH_ITEMS:
+            if before in seen:
+                raise ValueError("QuanSyn pagination cursor repeated")
+            seen.add(before)
+            if len(rows) >= MAX_BATCH_ITEMS or len(seen) > MAX_BATCH_ITEMS:
                 raise ValueError(f"待处理需求超过 {MAX_BATCH_ITEMS} 条，请先减少队列后重试")
         return rows
 
@@ -330,7 +405,11 @@ class QuanSyn:
                         raise ValueError(f"QuanSyn 请求失败（HTTP {response.status_code}），未确认成功")
                     raw = bytearray()
                     content_hash = hashlib.sha256()
+                    total = 0
                     for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                        total += len(chunk)
+                        if total > 25 * 1024 * 1024:
+                            raise ValueError("QuanSyn attachment exceeds 25 MB")
                         content_hash.update(chunk)
                         if sink is not None:
                             sink.write(chunk)
@@ -344,7 +423,7 @@ class QuanSyn:
             raise ValueError(f"QuanSyn 请求失败（HTTP {response.status_code}），未确认成功")
         return response.json()
 
-    def pull(self, sender, transfer):
+    def pull(self, sender, transfer, acknowledge=True):
         key = self.key(sender, transfer)
         saved = self.ctx.state.get(key, {})
         row = self.http(sender, "GET", "/transfers/" + transfer)
@@ -354,7 +433,7 @@ class QuanSyn:
             if not saved.get("completed"):
                 self.queue_add(sender, transfer)
             return saved
-        if row["status"] in {"claimed", "imported", "returned"} and saved.get("claim") and "files" in saved and "text" in saved:
+        if acknowledge and row["status"] in {"claimed", "imported", "returned"} and saved.get("claim") and "files" in saved and "text" in saved:
             for file in saved["files"]:
                 with Path(file["path"]).open("rb") as stream:
                     if hashlib.file_digest(stream, "sha256").hexdigest() != file["hash"]:
@@ -385,6 +464,10 @@ class QuanSyn:
             local_files.append({"path": str(destination), "name": name, "hash": file["content_hash"]})
         saved.update(text=row["text"], blocks=row["blocks"], files=local_files, imported=False)
         self.ctx.state.set(key, saved)
+        saved["revision"] = leased["revision"]
+        self.ctx.state.set(key, saved)
+        if not acknowledge:
+            return saved
         self.http(sender, "POST", f"/transfers/{transfer}/imported", payload={"revision": leased["revision"], "claim": claim})
         saved["imported"] = True
         self.ctx.state.set(key, saved)
@@ -403,14 +486,9 @@ class QuanSyn:
         if not match:
             self.turns.pop(session, None)
             return None
-        previous = self.turns.get(session, {})
         if len(self.turns) >= 128:
             self.turns.clear()
         action, transfer, selection = match.groups()
-        if action == "推送" and not transfer:
-            candidate = str(previous.get("id") or "")
-            if previous.get("sender") == sender and ID.fullmatch(candidate):
-                transfer = candidate
         turn = {"sender": sender, "action": action, "id": transfer, "turn_id": kw.get("turn_id"), "reply": None}
         callback = self.card_callbacks.pop(sender, None)
         if callback and callback[1] == command:

@@ -96,32 +96,18 @@ Bridge 消费裁决合同：
 - 当前普通知识预读取目标为 P95 不超过 3 秒，任何单次不得超过 5 秒发送门禁；未达到目标应优化重复工作，不得仅放宽安全超时。
 - 性能优化不得删除请求开始、Gateway 返回前、Hermes 发送前这三道独立复核，也不得引入跨请求授权缓存。
 
-#### 2.3 QuanSyn Desktop 人工中转合同
+#### 2.3 QuanSyn relay-only 邮箱合同
 
-QuanSyn Desktop 的手工模式是 Web 与当前 Hermes Desktop 会话之间的受控 transport adapter，不创建第二套对话 Runtime，也不把 Web request 当作 Hermes 上下文真相源。标准链路为：
+QuanSyn 是双向邮箱。公开 `/pull`、`/push`、Desktop 按钮不得启动模型/Agent 回合、执行 Web 需求或推断 qs request 绑定。复用现有 transfer/files HTTP APIs、Hermes SessionDB/SessionStore、Desktop composer hook 和 Feishu adapter；禁止第二套 runtime/router/registry。
 
-```text
-Web request
--> 用户点击“拉取到输入框”
--> 当前 Desktop composer 预填但不发送
--> 用户检查并在当前 Hermes session 发送
--> Hermes 使用该 session 的既有历史回答
--> 用户以 /push 显式发布最后一条已完成 assistant 消息
-```
-
-另提供 `/copy`：命令可位于正文开头或最后一行，adapter 只发布去除命令后的当前 composer 正文，不触发 Hermes 模型执行。
-
-合同约束：
-
-- 上下文只来自当前 Hermes session；Web 不提供、伪造或恢复 Hermes conversation ID。进入新 session、错误 session 或未恢复的 session 时，不得宣称继承了旧上下文。
-- “拉取到输入框”只做 claim/download 和 composer 预填，禁止自动发送、自动执行模型或自动外发结果。
-- Desktop 只保留最小活动关联 `transfer_id + session_id + pulled_at`。有未完成活动请求时不得静默覆盖；session 不匹配、活动目标缺失或目标不唯一时，`/push`、`/copy` 必须 fail closed。
-- `/push` 只读取当前 session 最近一条非隐藏、非空、已持久化的 assistant 消息；不得读取 tool/system/error、其他 session 或流式中间片段。
-- Feishu/Lark 的 `/push` 由现有 `pre_gateway_dispatch` 斜杠入口改写到既有 `推送 QuanSyn` 动作，只能复用同一 owner、同一 Hermes session 中紧邻的 QuanSyn 活动目标；无目标、跨用户或跨 session 时必须 fail closed，禁止回落到其他历史任务。
-- `/copy` 的正文必须与命令同处一个 composer draft；仅输入 `/copy` 时拒绝发布，不能从历史消息猜测正文。
-- owner/principal 只能由本机可信环境解析；Desktop 不得提交或覆盖身份。远端 token 只从 macOS Keychain 读取，不进入模型输入、代码、日志或 receipt。
-- 发布必须携带稳定 idempotency key 和 `reply_to=transfer_id`，并保留完整纯文本 `result/text` 与完整 Markdown block；HTTP 2xx 之后仍需返回远端结果 ID 才能显示成功。
-- 旧自动 pull/execute/push 入口继续保留，手工模式作为显式 Desktop adapter，不得改变旧入口的契约或自动触发它。
+- `/pull` 有界分页读取全部当前新 Web-to-Mac 消息，最多 100 条，超限明确失败。文本与全部附件下载、哈希验证完成后才能展示。Desktop 插入当前 composer，不发送，随后确认导入；Feishu 在 pre_gateway_dispatch 拦截，使用现有 adapter 发送完整“待发送草稿”卡片（含附件名与路径），成功后确认导入并返回 skip。任何部分失败不得声称成功。
+- `/push` 在 Desktop middleware 和 Feishu pre_gateway_dispatch 确定性执行，不使用 model tools、tool_describe、ai_lab_execute 或工具状态。Feishu 使用 SessionStore.get_or_create_session(source) 解析同一个当前会话，不能猜测会话 ID。
+- 只读当前 Hermes session 持久可见 user/assistant 消息；排除 hidden/system/tool/error/streaming intermediates、工具调用、slash 命令和已标记 QuanSyn origin。保留时间顺序与角色。
+- owner + session 的持久游标仅在 POST 成功且按 transfer ID 回读的正文、方向、目标与附件引用完全一致后推进。首次候选为全部合格消息，以后为 ID 大于成功游标的消息；超过五条只发布最新五条，skipped_count 明示较早未推送消息被永久丢弃。无新消息返回确定性 no-op success。
+- 一个稳定幂等批次，无 reply_to/request 绑定；request_id 基于 owner/session/source IDs、准确文本与文件哈希。所有 MEDIA: 路径与 [Image attached at: /path] 附件通过现有 /files 上传。缺失、不安全、超 25 MB、超过 10 个、上传中变化、上传或发布失败均拒绝整个批次且不移动游标；已上传孤立文件由既有服务端生命周期管理。
+- owner/principal 只从可信本机配置解析，凭据继续从 Keychain 读取。未知/未确认回执 fail closed。
+- Desktop composer 插入 hook 不提供持久 origin 元数据，用户后续发送拉取草稿可能再次推送；不使用文本去重猜测来源。Feishu 草稿是 adapter 展示消息，不写入模型历史。
+- `/copy` 仅发布当前 draft 正文，不推断 request 绑定。旧 `/quansyn`、“执行 QuanSyn …”“拉取并执行 QuanSyn …”与显式带 ID 的历史回传入口全部禁用；只保留本机设备配对所需的“绑定 QuanSyn …”。
 
 ### 3. 统一调用模型
 

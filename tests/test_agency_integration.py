@@ -303,6 +303,7 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
         "post_llm_call",
         "on_session_end",
         "pre_llm_call",
+        "pre_gateway_dispatch",
         "pre_tool_call",
         "post_tool_call",
         "transform_tool_result",
