@@ -1,16 +1,16 @@
 # QuanSyn relay-only redesign
 
 task_id: 20261013-quansyn-relay-only
-status: TESTED
+status: DEPLOYED
 branch: main
 worktree: /private/tmp/ai-lab-platform (current checkout /tmp/ai-lab-platform)
-head/local_commit: f19ef355db688002754a2086aa06b79ed4c66829 / pending task commit
-remote_sha: f19ef355db688002754a2086aa06b79ed4c66829 (origin/main fetched before edits; no task pushed)
-server_before: not inspected; no deployment requested
-server_after: unchanged by this task
-health_check: not run against a live server
-functional_check: 22 focused synthetic tests passed; full suite 2671 passed, 4 unrelated failures, 31 skipped; no live Desktop/Feishu/remote service exercise yet
-rollback_point: unchanged baseline HEAD above; no deployment rollback point created
+head/local_commit: 31ba206b8f60a27a88f40a2a5ef2b2a3600856b9 (relay implementation; this receipt update follows)
+remote_sha: 31ba206b8f60a27a88f40a2a5ef2b2a3600856b9 verified on origin/main before this receipt update
+server_before: local default-profile Gateway/Desktop used the preceding deployed QuanSyn plugin
+server_after: canonical plugin, shared relay helper, Desktop API and Desktop plugin copied into the default profile; Desktop process reloaded; Gateway restart completed outside the interrupted session
+health_check: ai-lab-capabilities reports enabled; live Desktop OpenAPI exposes pull, pull-presented and push-recent; unauthenticated push-recent fails closed with HTTP 401
+functional_check: 22 focused tests passed; deployed artifact deterministically returns skip for /pull and /push and disables legacy execution/ID-return entries; full suite 2671 passed, 4 unrelated failures, 31 skipped
+rollback_point: /Users/dengzhaoyu/.hermes/backups/quansyn-relay-20261013-104308
 manifest: ops/change-manifests/20261013-quansyn-relay-only-completion.md
 remaining_risks: Desktop origin metadata unavailable; live integration unverified
 
@@ -47,8 +47,15 @@ Feishu /pull and /push are intercepted with action=skip in pre_gateway_dispatch.
 - `node --input-type=module --check < agency/hermes-plugins/ai-lab-capabilities/desktop/plugin.js`: passed.
 - `git diff --check`: passed.
 
-Tests use only synthetic fixtures. Cover model-free skip, current-session resolution, all-pending pagination/limits, delayed import and failed presentation/download, first latest-five chronological/role-preserving publication, filtering, durable successful cursor/no-op, failure cursor preservation, stable idempotency, attachment inclusion/change/upload/publication failures, missing/unsafe/oversized/too-many files, and Desktop source contracts. Full repository suite not run or claimed green.
+Tests use only synthetic fixtures. Cover model-free skip, current-session resolution, all-pending pagination/limits, delayed import and failed presentation/download, first latest-five chronological/role-preserving publication, filtering, durable successful cursor/no-op, failure cursor preservation, stable idempotency, attachment inclusion/change/upload/publication/readback failures, missing/unsafe/oversized/too-many files, and Desktop source contracts. The full repository suite was run but is not claimed green because of the four unrelated failures above.
+
+## Deployment acceptance
+
+- Canonical and installed SHA-256 values match for `quansyn.py`, `quansyn_relay.py`, `dashboard/plugin_api.py` and `desktop/plugin.js`.
+- GitHub `origin/main` and the local checkout both resolved to `31ba206b8f60a27a88f40a2a5ef2b2a3600856b9` before this receipt-only update.
+- The reloaded Desktop service advertises the new relay endpoints. The enabled plugin list reports `ai-lab-capabilities 2.3.1` enabled.
+- The installed Gateway artifact was loaded in an isolated acceptance process: `/pull` and `/push` returned `{action: skip, reason: quansyn_relay_only}`; `/quansyn`, view/execute and ID-bound return commands had no canonical execution command.
 
 ## Remaining limitations
 
-Desktop's existing composer insertion hook only permits scheduling an event; no durable origin metadata or consumption acknowledgment is available. A pulled draft subsequently sent by the user can echo on later push. Known quansyn_origin metadata is excluded where present; no text-only dedupe is invented. Feishu adapter cards do not become session model messages. Uploaded artifacts from rejected batches remain subject to the existing server artifact lifecycle. Live Keychain, server contract behavior, Feishu delivery and Desktop composer rendering require integration acceptance before release. No commit, push, deployment or live external write performed.
+Desktop's existing composer insertion hook only permits scheduling an event; no durable origin metadata or consumption acknowledgment is available. A pulled draft subsequently sent by the user can echo on later push. Known quansyn_origin metadata is excluded where present; no text-only dedupe is invented. Feishu adapter cards do not become session model messages. Uploaded artifacts from rejected batches remain subject to the existing server artifact lifecycle. A real Keychain-backed `/pull` or `/push` was deliberately not fired during deployment because it would consume or create user-visible QuanSyn messages; that final external-service acceptance remains for the user's next explicit command.
