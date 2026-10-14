@@ -8,7 +8,6 @@ import re
 import secrets
 from pathlib import Path
 
-MAX_BYTES = 25 * 1024 * 1024
 PATHS = re.compile(r'MEDIA:\s*(?:"([^"\n]+)"|([^\s]+))|\[Image attached at:\s*([^\]\n]+)\]')
 
 
@@ -78,14 +77,34 @@ def read_attachment(value):
     with os.fdopen(fd, 'rb') as stream:
         import stat
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= MAX_BYTES:
-            raise ValueError('Attachment must be a nonempty regular file of at most 25 MB')
-        data = stream.read(MAX_BYTES + 1)
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
+            raise ValueError('Attachment must be a nonempty regular file')
+        content_hash = hashlib.sha256()
+        while chunk := stream.read(1024 * 1024):
+            content_hash.update(chunk)
         after = os.fstat(stream.fileno())
     fingerprint = lambda st: (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-    if fingerprint(before) != fingerprint(after) or len(data) != before.st_size:
+    if fingerprint(before) != fingerprint(after):
         raise ValueError('Attachment changed while reading')
-    return path, data, hashlib.sha256(data).hexdigest(), fingerprint(before)
+    return path, content_hash.hexdigest(), fingerprint(before)
+
+
+def upload_attachment(owner, request, attachment):
+    """Stream one stable regular file without imposing an application byte cap."""
+    path, expected, expected_fingerprint = attachment
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        fingerprint = lambda st: (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        if fingerprint(before) != expected_fingerprint:
+            raise ValueError('Attachment changed before upload')
+        uploaded = request(owner, 'POST', '/files', data=stream, filename=path.name)
+        after = os.fstat(stream.fileno())
+    if fingerprint(after) != expected_fingerprint:
+        raise ValueError('Attachment changed during upload')
+    if not re.fullmatch(r'ga_[a-f0-9]{32}', str(uploaded.get('artifact_id') or '')):
+        raise ValueError('QuanSyn did not confirm uploaded artifact')
+    return uploaded, expected
 
 
 def push_recent(owner, session, state_dir, request, db=None):
@@ -110,7 +129,7 @@ def push_recent(owner, session, state_dir, request, db=None):
             return {'success': True, 'noop': True, 'count': 0, 'skipped_count': 0}
         attachments = [read_attachment(value) for value in attachment_paths(messages)]
         signature = {'owner': owner, 'session': session, 'messages': messages,
-                     'files': [{'path': str(p), 'hash': h} for p, _, h, _ in attachments]}
+                     'files': [{'path': str(p), 'hash': h} for p, h, _ in attachments]}
         request_id = 'relay-' + hashlib.sha256(json.dumps(signature, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         text = '\n\n'.join(f"[{m['role']}]\n{m['text']}" for m in messages)
         if len(text) > 250000 or len(text.encode()) > 500000:
@@ -120,10 +139,8 @@ def push_recent(owner, session, state_dir, request, db=None):
             refs = json.loads(batch_path.read_text())
         else:
             refs = []
-            for p, data, expected, before in attachments:
-                uploaded = request(owner, 'POST', '/files', data=data, filename=p.name)
-                if not re.fullmatch(r'ga_[a-f0-9]{32}', str(uploaded.get('artifact_id') or '')):
-                    raise ValueError('QuanSyn did not confirm uploaded artifact')
+            for attachment in attachments:
+                uploaded, _ = upload_attachment(owner, request, attachment)
                 refs.append({'artifact_id': uploaded['artifact_id']})
             # Keep exact remote refs on retry, including ambiguous publish failures.
             temp_batch = batch_path.with_suffix('.tmp-' + secrets.token_hex(6))
@@ -132,8 +149,8 @@ def push_recent(owner, session, state_dir, request, db=None):
             with temp_batch.open('rb') as stream:
                 os.fsync(stream.fileno())
             os.replace(temp_batch, batch_path)
-        for p, _, expected, before in attachments:
-            _, _, actual, after = read_attachment(str(p))
+        for p, expected, before in attachments:
+            _, actual, after = read_attachment(str(p))
             if expected != actual or before != after:
                 raise ValueError('Attachment changed during upload')
         payload = {'request_id': request_id, 'direction': 'result', 'target': 'mac',

@@ -104,7 +104,7 @@ QuanSyn 是双向邮箱。公开 `/pull`、`/push`、Desktop 按钮不得启动�
 - `/push` 在 Desktop middleware 和 Feishu pre_gateway_dispatch 确定性执行，不使用 model tools、tool_describe、ai_lab_execute 或工具状态。Feishu 使用 SessionStore.get_or_create_session(source) 解析同一个当前会话，不能猜测会话 ID。
 - 只读当前 Hermes session 持久可见 user/assistant 消息；排除 hidden/system/tool/error/streaming intermediates、工具调用、slash 命令和已标记 QuanSyn origin。保留时间顺序与角色。
 - owner + session 的持久游标仅在 POST 成功且按 transfer ID 回读的正文、方向、目标与附件引用完全一致后推进。首次候选为全部合格消息，以后为 ID 大于成功游标的消息；超过五条只发布最新五条，skipped_count 明示较早未推送消息被永久丢弃。无新消息返回确定性 no-op success。
-- 一个稳定幂等批次，无 reply_to/request 绑定；request_id 基于 owner/session/source IDs、准确文本与文件哈希。所有 MEDIA: 路径与 [Image attached at: /path] 附件通过现有 /files 上传。缺失、不安全、超 25 MB、超过 10 个、上传中变化、上传或发布失败均拒绝整个批次且不移动游标；已上传孤立文件由既有服务端生命周期管理。
+- 一个稳定幂等批次，无 reply_to/request 绑定；request_id 基于 owner/session/source IDs、准确文本与文件哈希。所有 MEDIA: 路径与 [Image attached at: /path] 附件通过现有 /files 流式传输，不设置应用层附件字节上限；缺失、不安全、超过 10 个、上传中变化、上传或发布失败均拒绝整个批次且不移动游标。操作系统、文件系统、HTTP 基础设施和消息平台自身的物理限制仍按真实错误返回；已上传孤立文件由既有服务端生命周期管理。
 - owner/principal 只从可信本机配置解析，凭据继续从 Keychain 读取。未知/未确认回执 fail closed。
 - Desktop composer 插入 hook 不提供持久 origin 元数据，用户后续发送拉取草稿可能再次推送；不使用文本去重猜测来源。Feishu 草稿是 adapter 展示消息，不写入模型历史。
 - `/copy` 仅发布当前 draft 正文，不推断 request 绑定。旧 `/quansyn`、“执行 QuanSyn …”“拉取并执行 QuanSyn …”与显式带 ID 的历史回传入口全部禁用；只保留本机设备配对所需的“绑定 QuanSyn …”。

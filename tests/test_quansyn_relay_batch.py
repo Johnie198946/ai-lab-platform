@@ -73,14 +73,17 @@ def test_attachment_all_or_nothing_and_hash_key(tmp_path):
     attachment.write_bytes(b'synthetic-image')
     message = {'id': 1, 'role': 'user', 'content': f'[Image attached at: {attachment}]\nMEDIA: {attachment}'}
     calls = []
+    uploaded_bodies = []
     def request(owner, method, path, **kw):
+        if path == '/files':
+            uploaded_bodies.append(kw['data'].read())
         calls.append((path, kw))
         if method == 'GET':
             return {'id': 'qs_' + 'a' * 32, **calls[-2][1]['payload']}
         return {'artifact_id': 'ga_' + 'b' * 32} if path == '/files' else {'id': 'qs_' + 'a' * 32}
     result = relay.push_recent('owner', 'current', tmp_path / 'state', request, DB([message]))
     assert [path for path, _ in calls] == ['/files', '/transfers', '/transfers/' + 'qs_' + 'a' * 32]
-    assert calls[0][1]['data'] == b'synthetic-image'
+    assert uploaded_bodies == [b'synthetic-image']
     assert calls[1][1]['payload']['files'] == [{'artifact_id': 'ga_' + 'b' * 32}]
     assert str(attachment) not in calls[1][1]['payload']['text']
     attachment.write_bytes(b'changed')
@@ -118,15 +121,15 @@ def test_attachment_failure_never_moves_cursor(tmp_path, kind):
     assert not list((tmp_path / 'state').rglob('*.json'))
 
 
-def test_unsafe_oversized_and_too_many_attachments(tmp_path):
+def test_unsafe_large_and_too_many_attachments(tmp_path):
     file = tmp_path / 'target'; file.write_text('synthetic')
     link = tmp_path / 'link'; link.symlink_to(file)
     with pytest.raises(ValueError):
         relay.read_attachment(str(link))
     with file.open('wb') as stream:
-        stream.truncate(relay.MAX_BYTES + 1)
-    with pytest.raises(ValueError):
-        relay.read_attachment(str(file))
+        stream.truncate(26 * 1024 * 1024)
+    path, digest, fingerprint = relay.read_attachment(str(file))
+    assert path == file and len(digest) == 64 and fingerprint[3] == 26 * 1024 * 1024
     with pytest.raises(ValueError):
         relay.attachment_paths([{'text': '\n'.join(f'MEDIA: /tmp/{i}' for i in range(11))}])
 

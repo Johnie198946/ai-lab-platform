@@ -405,11 +405,7 @@ class QuanSyn:
                         raise ValueError(f"QuanSyn 请求失败（HTTP {response.status_code}），未确认成功")
                     raw = bytearray()
                     content_hash = hashlib.sha256()
-                    total = 0
                     for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                        total += len(chunk)
-                        if total > 25 * 1024 * 1024:
-                            raise ValueError("QuanSyn attachment exceeds 25 MB")
                         content_hash.update(chunk)
                         if sink is not None:
                             sink.write(chunk)

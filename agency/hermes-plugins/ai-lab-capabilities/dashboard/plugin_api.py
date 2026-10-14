@@ -31,7 +31,6 @@ except ImportError:  # pragma: no cover - standalone fallback
 
 router = APIRouter()
 ID_PATTERN = r"^qs_[a-f0-9]{32}$"
-MAX_BYTES = 25 * 1024 * 1024
 MAX_PENDING = 100
 
 
@@ -99,12 +98,8 @@ def _request(sender: str, method: str, path: str, *, payload=None, sink=None, da
             with client.stream(method, _api_base() + "/api/v1/quansyn" + path, headers=headers) as response:
                 if response.status_code >= 300:
                     raise ValueError(f"QuanSyn request failed (HTTP {response.status_code})")
-                total = 0
                 digest = hashlib.sha256()
                 for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                    total += len(chunk)
-                    if total > MAX_BYTES:
-                        raise ValueError("QuanSyn attachment exceeds 25 MB")
                     digest.update(chunk)
                     sink.write(chunk)
                 return digest.hexdigest()

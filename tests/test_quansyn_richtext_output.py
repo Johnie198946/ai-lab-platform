@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import types
 from pathlib import Path
 
@@ -137,6 +138,42 @@ def test_feishu_uses_current_store_session_and_sends_drafts(tmp_path):
         assert [card["header"]["title"]["content"] for card in sent[:2]] == ["待发送草稿"] * 2
         assert selected == [("current-session", "same-db")]
     asyncio.run(scenario())
+
+
+def test_pull_streams_attachment_larger_than_25_mb_without_application_cap(tmp_path):
+    module = load_quansyn_module()
+    quansyn = module.QuanSyn(Context(tmp_path))
+    quansyn.base = lambda: "https://example.test"
+    quansyn.credentials = types.SimpleNamespace(get=lambda _account: "token")
+
+    class Response:
+        status_code = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def iter_bytes(self, chunk_size):
+            assert chunk_size == 1024 * 1024
+            for _ in range(26):
+                yield b"x" * chunk_size
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+        def stream(self, method, url, headers):
+            assert method == "GET" and url.endswith("/api/v1/quansyn/files/ga_test")
+            assert headers["Authorization"] == "Bearer token"
+            return Response()
+
+    module.httpx.Client = Client
+    sink = io.BytesIO()
+    digest = quansyn.http("owner", "GET", "/files/ga_test", sink=sink)
+    assert sink.tell() == 26 * 1024 * 1024
+    assert len(digest) == 64
 
 
 def test_feishu_failed_presentation_does_not_ack(tmp_path):
